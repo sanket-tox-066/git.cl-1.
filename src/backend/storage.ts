@@ -3,14 +3,27 @@ import path from 'path';
 import zlib from 'zlib';
 import crypto from 'crypto';
 
-const isVercel = process.env.VERCEL === '1' || !!process.env.VERCEL || process.env.NOW_BUILDER === '1';
-const baseDir = isVercel ? '/tmp' : process.cwd();
+// Robust, multi-layered detection for Vercel and serverless/read-only environments
+let isVercelEnv = process.env.VERCEL === '1' || !!process.env.VERCEL || !!process.env.VERCEL_ENV || process.env.NOW_BUILDER === '1';
+
+if (!isVercelEnv) {
+  try {
+    const testFile = path.resolve(process.cwd(), '.write-test-' + Math.random().toString(36).substring(2, 10));
+    fs.writeFileSync(testFile, 'test');
+    fs.unlinkSync(testFile);
+  } catch (e) {
+    // If process.cwd() is read-only, fallback to Vercel/Serverless style /tmp directory
+    isVercelEnv = true;
+  }
+}
+
+const baseDir = isVercelEnv ? '/tmp' : process.cwd();
 
 export let SANDBOX_DIR = path.resolve(baseDir, 'sandbox');
 export let VCS_DIR = path.resolve(SANDBOX_DIR, '.gitclone');
 
 export function setPlaygroundMode(enabled: boolean): void {
-  const currentBaseDir = isVercel ? '/tmp' : process.cwd();
+  const currentBaseDir = isVercelEnv ? '/tmp' : process.cwd();
   if (enabled) {
     SANDBOX_DIR = path.resolve(currentBaseDir, 'sandbox_playground');
     VCS_DIR = path.resolve(SANDBOX_DIR, '.gitclone');
@@ -145,14 +158,18 @@ export function isIgnored(filePath: string, ignorePatterns: string[]): boolean {
 
 // Low level helpers
 export function ensureSandboxExists(): void {
-  if (!fs.existsSync(SANDBOX_DIR)) {
-    fs.mkdirSync(SANDBOX_DIR, { recursive: true });
-    // Write some initial sample files for the playground
-    fs.writeFileSync(path.join(SANDBOX_DIR, 'main.js'), `// Welcome to GitClone sandbox!\nconsole.log("Hello, GitClone!");\n`);
-    fs.writeFileSync(path.join(SANDBOX_DIR, 'readme.md'), `# My Sample Project\n\nThis is a sample project managed by GitClone.\nModify files and track changes!\n`);
-    const docsDir = path.join(SANDBOX_DIR, 'docs');
-    fs.mkdirSync(docsDir, { recursive: true });
-    fs.writeFileSync(path.join(docsDir, 'about.txt'), `GitClone is an elegant, content-addressed VCS.\nWritten in pure TypeScript.\n`);
+  try {
+    if (!fs.existsSync(SANDBOX_DIR)) {
+      fs.mkdirSync(SANDBOX_DIR, { recursive: true });
+      // Write some initial sample files for the playground
+      fs.writeFileSync(path.join(SANDBOX_DIR, 'main.js'), `// Welcome to GitClone sandbox!\nconsole.log("Hello, GitClone!");\n`);
+      fs.writeFileSync(path.join(SANDBOX_DIR, 'readme.md'), `# My Sample Project\n\nThis is a sample project managed by GitClone.\nModify files and track changes!\n`);
+      const docsDir = path.join(SANDBOX_DIR, 'docs');
+      fs.mkdirSync(docsDir, { recursive: true });
+      fs.writeFileSync(path.join(docsDir, 'about.txt'), `GitClone is an elegant, content-addressed VCS.\nWritten in pure TypeScript.\n`);
+    }
+  } catch (error) {
+    console.error('Failed to create sandbox directory or files:', error);
   }
 }
 
