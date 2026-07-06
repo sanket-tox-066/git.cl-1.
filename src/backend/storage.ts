@@ -20,6 +20,10 @@ export function setPlaygroundMode(enabled: boolean): void {
   }
 }
 
+export function getSandboxDir(): string {
+  return SANDBOX_DIR;
+}
+
 export interface StagingIndex {
   [filePath: string]: string; // relativePath -> SHA-1 hash
 }

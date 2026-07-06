@@ -1,7 +1,6 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
-import { createServer as createViteServer } from 'vite';
 import AdmZip from 'adm-zip';
 
 // Import our modular VCS backend code
@@ -24,7 +23,8 @@ import {
   writeConfig,
   logMessage,
   setPlaygroundMode,
-  SANDBOX_DIR
+  SANDBOX_DIR,
+  getSandboxDir
 } from './src/backend/storage';
 import { initRepo } from './src/backend/init';
 import { getRepoStatus } from './src/backend/status';
@@ -49,6 +49,14 @@ const PORT = 3000;
 
 // Middleware
 app.use(express.json());
+
+// Normalize req.url under Vercel Serverless environment
+app.use((req, res, next) => {
+  if (req.url && !req.url.startsWith('/api')) {
+    req.url = '/api' + req.url;
+  }
+  next();
+});
 
 // --- Simple Server-Side Session Auth ---
 const sessionStore = new Map<string, { username: string; expires: number }>();
@@ -300,13 +308,13 @@ const sessionStore = new Map<string, { username: string; expires: number }>();
           if (stat.isDirectory()) {
             traverse(fullPath);
           } else {
-            const relPath = path.relative(path.resolve(process.cwd(), 'sandbox'), fullPath);
+            const relPath = path.relative(getSandboxDir(), fullPath);
             const content = fs.readFileSync(fullPath, 'utf-8');
             results.push({ relativePath: relPath, content, size: stat.size });
           }
         }
       };
-      traverse(path.resolve(process.cwd(), 'sandbox'));
+      traverse(getSandboxDir());
       res.json({ success: true, files: results });
     } catch (error: any) {
       res.status(500).json({ success: false, message: error.message });
@@ -321,7 +329,7 @@ const sessionStore = new Map<string, { username: string; expires: number }>();
       return;
     }
     try {
-      const fullPath = path.join(path.resolve(process.cwd(), 'sandbox'), filePath);
+      const fullPath = path.join(getSandboxDir(), filePath);
       if (!fs.existsSync(fullPath)) {
         res.status(404).json({ success: false, message: 'File not found' });
         return;
@@ -356,7 +364,7 @@ const sessionStore = new Map<string, { username: string; expires: number }>();
       return;
     }
     try {
-      const fullPath = path.join(path.resolve(process.cwd(), 'sandbox'), filePath);
+      const fullPath = path.join(getSandboxDir(), filePath);
       if (!fs.existsSync(fullPath)) {
         res.status(404).json({ success: false, message: 'File not found' });
         return;
@@ -776,7 +784,7 @@ const sessionStore = new Map<string, { username: string; expires: number }>();
         const stagedHash = index[filePath];
         textA = stagedHash ? readObject(stagedHash) : '';
 
-        const fullPath = path.join(path.resolve(process.cwd(), 'sandbox'), filePath);
+        const fullPath = path.join(getSandboxDir(), filePath);
         if (fs.existsSync(fullPath)) {
           textB = fs.readFileSync(fullPath, 'utf-8');
         } else {
@@ -1032,7 +1040,7 @@ const sessionStore = new Map<string, { username: string; expires: number }>();
   // Reset Playground Repository
   app.post('/api/playground/reset', (req, res) => {
     try {
-      const playgroundDir = path.resolve(process.cwd(), 'sandbox_playground');
+      const playgroundDir = path.resolve(path.dirname(getSandboxDir()), 'sandbox_playground');
       if (fs.existsSync(playgroundDir)) {
         fs.rmSync(playgroundDir, { recursive: true, force: true });
       }
@@ -1093,6 +1101,7 @@ const sessionStore = new Map<string, { username: string; expires: number }>();
   if (process.env.NODE_ENV !== 'production') {
     (async () => {
       try {
+        const { createServer: createViteServer } = await import('vite');
         const vite = await createViteServer({
           server: { middlewareMode: true },
           appType: 'spa'
