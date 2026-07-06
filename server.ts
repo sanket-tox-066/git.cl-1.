@@ -45,14 +45,13 @@ import { generateBranchyResponse, generateBranchyResponseStream } from './src/ba
 
 export const app = express();
 
-async function startServer() {
-  const PORT = 3000;
+const PORT = 3000;
 
-  // Middleware
-  app.use(express.json());
+// Middleware
+app.use(express.json());
 
-  // --- Simple Server-Side Session Auth ---
-  const sessionStore = new Map<string, { username: string; expires: number }>();
+// --- Simple Server-Side Session Auth ---
+const sessionStore = new Map<string, { username: string; expires: number }>();
 
   const getSessionCookie = (req: express.Request): string | null => {
     // 1. Check Authorization Header (Bearer Token)
@@ -1092,24 +1091,33 @@ async function startServer() {
   // ==================== VITE AND STATIC ASSETS ====================
 
   if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa'
-    });
-    app.use(vite.middlewares);
+    (async () => {
+      try {
+        const vite = await createViteServer({
+          server: { middlewareMode: true },
+          appType: 'spa'
+        });
+        app.use(vite.middlewares);
+        
+        if (process.env.VERCEL !== '1' && !process.env.VERCEL_ENV) {
+          app.listen(PORT, '0.0.0.0', () => {
+            console.log(`Server running on http://localhost:${PORT}`);
+          });
+        }
+      } catch (err) {
+        console.error('Vite dev server startup failed', err);
+      }
+    })();
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
-  }
 
-  if (process.env.VERCEL !== '1' && !process.env.VERCEL_ENV) {
-    app.listen(PORT, '0.0.0.0', () => {
-      console.log(`Server running on http://localhost:${PORT}`);
-    });
+    if (process.env.VERCEL !== '1' && !process.env.VERCEL_ENV) {
+      app.listen(PORT, '0.0.0.0', () => {
+        console.log(`Server running on http://localhost:${PORT}`);
+      });
+    }
   }
-}
-
-startServer();
