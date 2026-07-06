@@ -118,7 +118,17 @@ const customFetch = async (input: RequestInfo | URL, init?: RequestInit): Promis
       input.searchParams.set('playground', 'true');
     }
   }
-  return originalFetch.call(window, input, init);
+  const res = await originalFetch.call(window, input, init);
+  const originalJson = res.json.bind(res);
+  res.json = async () => {
+    try {
+      return await originalJson();
+    } catch (err) {
+      console.warn('JSON parsing failed, returning safe fallback object', err);
+      return { success: false, message: 'Server returned an invalid response (non-JSON).' };
+    }
+  };
+  return res;
 };
 
 const fetch = customFetch;
