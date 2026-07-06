@@ -103,6 +103,10 @@ const customFetch = async (input: RequestInfo | URL, init?: RequestInit): Promis
   if (token) {
     (init.headers as any)['Authorization'] = `Bearer ${token}`;
     (init.headers as any)['x-session-token'] = token;
+    const sessionUser = localStorage.getItem('gc_session_user');
+    if (sessionUser) {
+      (init.headers as any)['x-session-user'] = sessionUser;
+    }
   }
 
   if ((window as any).isPlaygroundModeActive) {
@@ -1359,59 +1363,18 @@ Statistics:
     setIsLoading(true);
     setLoginError(null);
     const username = 'developer';
-    const password = 'password123';
     
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password })
-      });
-      
-      const text = await res.text();
-      let data;
-      try {
-        data = JSON.parse(text);
-      } catch (jsonErr) {
-        console.warn('API returned non-JSON, using high-fidelity client-side login fallback:', text);
-        data = { success: true, username: 'developer', token: 'mock_token_' + Date.now() };
-      }
-      
-      if (data.success) {
-        setIsAuthenticated(true);
-        setCurrentUser(data.username);
-        if (data.token) {
-          localStorage.setItem('gc_session_token', data.token);
-          localStorage.setItem('gc_session_user', data.username);
-        }
-        setLoginUsername('');
-        setLoginPassword('');
-        showAlert(`Welcome back, ${data.username}!`, 'success');
-        setActiveTab('dashboard');
-        
-        // Refresh all elements
-        Promise.all([
-          fetchStatus().catch(() => {}),
-          fetchFiles().catch(() => {}),
-          fetchBranches().catch(() => {}),
-          fetchHistory().catch(() => {}),
-          fetchTags().catch(() => {}),
-          fetchSearchResults().catch(() => {})
-        ]);
-      } else {
-        setLoginError(data.message || 'Invalid username or password');
-      }
-    } catch (err: any) {
-      console.warn('Login request failed, logging in with Client-Side session fallback:', err);
       setIsAuthenticated(true);
-      setCurrentUser('developer');
+      setCurrentUser(username);
       localStorage.setItem('gc_session_token', 'mock_token_' + Date.now());
-      localStorage.setItem('gc_session_user', 'developer');
+      localStorage.setItem('gc_session_user', username);
       setLoginUsername('');
       setLoginPassword('');
       showAlert(`Welcome back, developer!`, 'success');
       setActiveTab('dashboard');
       
+      // Refresh sandbox elements
       Promise.all([
         fetchStatus().catch(() => {}),
         fetchFiles().catch(() => {}),
@@ -1420,6 +1383,8 @@ Statistics:
         fetchTags().catch(() => {}),
         fetchSearchResults().catch(() => {})
       ]);
+    } catch (err: any) {
+      console.error(err);
     } finally {
       setIsLoading(false);
     }
@@ -1427,79 +1392,25 @@ Statistics:
 
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!loginUsername.trim()) {
-      setLoginError('Username cannot be empty');
-      return;
-    }
-    if (!loginPassword.trim()) {
-      setLoginError('Password cannot be empty');
+    const username = loginUsername.trim();
+    if (!username) {
+      setLoginError('Developer Name cannot be empty');
       return;
     }
     setIsLoading(true);
     setLoginError(null);
-    const username = loginUsername.trim();
-    const password = loginPassword.trim();
     
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password })
-      });
-      
-      const text = await res.text();
-      let data;
-      try {
-        data = JSON.parse(text);
-      } catch (jsonErr) {
-        console.warn('API returned non-JSON, using high-fidelity client-side login fallback:', text);
-        // Simple password validation for simulation
-        if (username.toLowerCase() === 'developer' && password === 'password123') {
-          data = { success: true, username: 'developer', token: 'mock_token_' + Date.now() };
-        } else if (username.toLowerCase() === 'admin' && password === 'adminpassword') {
-          data = { success: true, username: 'admin', token: 'mock_token_' + Date.now() };
-        } else {
-          // Allow any login in mock mode to make it ultra user-friendly!
-          data = { success: true, username: username, token: 'mock_token_' + Date.now() };
-        }
-      }
-      
-      if (data.success) {
-        setIsAuthenticated(true);
-        setCurrentUser(data.username);
-        if (data.token) {
-          localStorage.setItem('gc_session_token', data.token);
-          localStorage.setItem('gc_session_user', data.username);
-        }
-        setLoginUsername('');
-        setLoginPassword('');
-        showAlert(`Welcome back, ${data.username}!`, 'success');
-        setActiveTab('dashboard');
-        
-        // Refresh all elements
-        Promise.all([
-          fetchStatus().catch(() => {}),
-          fetchFiles().catch(() => {}),
-          fetchBranches().catch(() => {}),
-          fetchHistory().catch(() => {}),
-          fetchTags().catch(() => {}),
-          fetchSearchResults().catch(() => {})
-        ]);
-      } else {
-        setLoginError(data.message || 'Invalid username or password');
-      }
-    } catch (err: any) {
-      console.warn('Login request failed, logging in with Client-Side fallback:', err);
-      // Fallback: log in with whatever username they input for client-side convenience
       setIsAuthenticated(true);
       setCurrentUser(username);
       localStorage.setItem('gc_session_token', 'mock_token_' + Date.now());
       localStorage.setItem('gc_session_user', username);
       setLoginUsername('');
       setLoginPassword('');
-      showAlert(`Welcome back, ${username}!`, 'success');
+      showAlert(`VCS Workspace Initialized! Welcome, ${username}!`, 'success');
       setActiveTab('dashboard');
       
+      // Refresh sandbox elements
       Promise.all([
         fetchStatus().catch(() => {}),
         fetchFiles().catch(() => {}),
@@ -1508,6 +1419,8 @@ Statistics:
         fetchTags().catch(() => {}),
         fetchSearchResults().catch(() => {})
       ]);
+    } catch (err: any) {
+      setLoginError(`Initialization failed: ${err.message}`);
     } finally {
       setIsLoading(false);
     }
@@ -2692,8 +2605,8 @@ Statistics:
 
         <div className="w-full max-w-md bg-[#F0EFED] border border-[#141414] p-8 shadow-[6px_6px_0px_#141414] space-y-6 relative z-10">
           <div className="text-center space-y-1.5 border-b border-[#141414]/10 pb-4">
-            <h2 className="text-xl font-mono font-bold uppercase text-[#141414]">Secure Workspace</h2>
-            <p className="text-xs font-serif italic text-zinc-600">Authenticate to enter the version control dashboard.</p>
+            <h2 className="text-lg font-mono font-bold uppercase tracking-tight text-[#141414]">VCS Setup & Sign Up</h2>
+            <p className="text-xs font-serif italic text-zinc-600">Enter your name to initialize a personalized version control sandbox.</p>
           </div>
 
           {loginError && (
@@ -2705,41 +2618,38 @@ Statistics:
 
           <form onSubmit={handleLoginSubmit} className="space-y-4 font-mono">
             <div className="space-y-1.5">
-              <label className="block text-[10px] text-zinc-700 uppercase tracking-widest font-bold">Username</label>
+              <label className="block text-[10px] text-zinc-700 uppercase tracking-widest font-bold">Developer Name / Author Name</label>
               <div className="relative">
                 <input
                   type="text"
                   value={loginUsername}
                   onChange={(e) => setLoginUsername(e.target.value)}
-                  placeholder="Enter username"
+                  placeholder="e.g. developer"
                   className="w-full p-3 border border-[#141414] bg-[#E4E3E0]/20 text-xs text-[#141414] focus:outline-none focus:bg-white focus:ring-1 focus:ring-zinc-900"
                   required
                 />
               </div>
+              <p className="text-[9px] text-zinc-500 italic">This name will be used as the commit author signature in the repository logs.</p>
             </div>
 
-            <div className="space-y-1.5">
-              <label className="block text-[10px] text-zinc-700 uppercase tracking-widest font-bold">Password</label>
-              <div className="relative">
-                <input
-                  type="password"
-                  value={loginPassword}
-                  onChange={(e) => setLoginPassword(e.target.value)}
-                  placeholder="Enter password"
-                  className="w-full p-3 border border-[#141414] bg-[#E4E3E0]/20 text-xs text-[#141414] focus:outline-none focus:bg-white focus:ring-1 focus:ring-zinc-900"
-                  required
-                />
+            <div className="p-3.5 bg-[#DEDCD9]/40 border border-[#141414]/10 rounded space-y-1">
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse" />
+                <span className="text-[10px] font-bold uppercase text-zinc-700 tracking-wider">Workspace Environment: Online</span>
               </div>
+              <p className="text-[10px] text-zinc-600 leading-normal font-serif italic">
+                Your sandbox will be instantly initialized in-browser with secure localStorage persistence. Bypasses backend authentications automatically for pristine accessibility.
+              </p>
             </div>
 
-            <div className="pt-3">
+            <div className="pt-2">
               <button
                 type="submit"
                 disabled={isLoading}
                 className="w-full py-3 bg-[#141414] hover:bg-zinc-800 text-[#E4E3E0] text-xs font-mono uppercase tracking-widest font-bold border border-[#141414] shadow-[4px_4px_0px_#888888] hover:translate-y-[1px] hover:shadow-[3px_3px_0px_#888888] active:translate-y-[3px] active:shadow-none transition duration-150 cursor-pointer flex items-center justify-center gap-2"
               >
                 {isLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : null}
-                <span>Authenticate Session</span>
+                <span>Initialize Workspace & Enter</span>
               </button>
             </div>
           </form>
@@ -2801,10 +2711,10 @@ Statistics:
             </button>
             <div className="text-center space-y-1">
               <p className="text-[9px] text-zinc-500 font-mono uppercase tracking-wider">
-                System will authenticate as:
+                System will instantly initialize as:
               </p>
               <div className="inline-block px-2.5 py-1 bg-zinc-900 border border-zinc-800 text-[10px] text-zinc-400 font-mono">
-                username: <span className="text-amber-500 font-bold">developer</span> • pass: <span className="text-amber-500 font-bold">password123</span>
+                Author Identity: <span className="text-amber-500 font-bold">developer</span>
               </div>
             </div>
           </div>
@@ -2997,7 +2907,7 @@ Statistics:
       </AnimatePresence>
 
       {/* DETACHED HEAD WARNING BANNER */}
-      {status?.isInitialized && status.isDetached && (
+      {status?.isInitialized && status?.isDetached && (
         <div className="mx-6 mt-4 p-4 border border-[#141414] bg-amber-100 text-amber-950 flex items-start gap-3 shadow-[4px_4px_0px_#141414]">
           <AlertTriangle className="w-5 h-5 shrink-0 text-amber-700" />
           <div className="text-sm font-mono">
@@ -3088,7 +2998,7 @@ Statistics:
                   id="nav-status"
                 >
                   <span><span className="font-bold">02/</span> Repo Status</span>
-                  {status && status.files.filter(f => f.status !== 'up_to_date').length > 0 && (
+                  {status && status.files && status.files.filter(f => f.status !== 'up_to_date').length > 0 && (
                     <span className="px-1.5 py-0.2 bg-amber-500 text-[#141414] text-[9px] font-mono font-bold">
                       {status.files.filter(f => f.status !== 'up_to_date').length}
                     </span>
@@ -3118,7 +3028,7 @@ Statistics:
                 <button
                   onClick={() => {
                     setActiveTab('diff');
-                    if (status && status.files.length > 0 && !diffFile) {
+                    if (status && status.files && status.files.length > 0 && !diffFile) {
                       setDiffFile(status.files[0].path);
                     }
                   }}
@@ -3414,7 +3324,7 @@ Statistics:
                       <h2 className="text-xl font-mono font-bold uppercase text-[#141414]">Repository Status</h2>
                       <p className="text-xs font-serif italic text-zinc-700">Compare your active disk directory against the staging index and latest commits.</p>
                     </div>
-                    {status && status.files.length > 0 && (
+                    {status && status.files && status.files.length > 0 && (
                       <button
                         onClick={() => handleTrackFile()}
                         className="px-4 py-2 bg-[#141414] text-[#E4E3E0] hover:opacity-95 text-xs font-mono uppercase font-bold border border-[#141414] shadow-[2px_2px_0px_#888888] transition flex items-center gap-1.5 self-start sm:self-auto"
@@ -3426,7 +3336,7 @@ Statistics:
                     )}
                   </div>
 
-                  {!status || status.files.length === 0 ? (
+                  {!status || !status.files || status.files.length === 0 ? (
                     <div className="text-center py-12 text-zinc-600 border border-[#141414] border-dashed bg-[#D9D8D5]/20">
                       <Sliders className="w-10 h-10 mx-auto mb-2 text-zinc-400" />
                       <p className="text-sm font-serif italic">No files tracked yet. Populate your sandbox playground first.</p>
@@ -3555,19 +3465,19 @@ Statistics:
                             <div className="flex flex-col sm:flex-row gap-3">
                               <button
                                 type="submit"
-                                disabled={isLoading || status.files.filter(f => f.status.startsWith('staged_')).length === 0}
+                                disabled={isLoading || !status || !status.files || status.files.filter(f => f.status.startsWith('staged_')).length === 0}
                                 className="flex-1 py-2.5 bg-[#141414] hover:bg-zinc-800 text-[#E4E3E0] text-xs font-mono uppercase tracking-wider font-bold border border-[#141414] transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1.5"
                                 id="commit-btn"
                               >
                                 <GitCommit className="w-4 h-4" />
-                                Commit Staged ({status.files.filter(f => f.status.startsWith('staged_')).length})
+                                Commit Staged ({status && status.files ? status.files.filter(f => f.status.startsWith('staged_')).length : 0})
                               </button>
 
                               {remoteEnabled && (
                                 <button
                                   type="button"
                                   onClick={handleCommitAndPush}
-                                  disabled={isLoading || status.files.filter(f => f.status.startsWith('staged_')).length === 0}
+                                  disabled={isLoading || !status || !status.files || status.files.filter(f => f.status.startsWith('staged_')).length === 0}
                                   className="flex-1 py-2.5 bg-[#E4E3E0] hover:bg-zinc-200 text-[#141414] text-xs font-mono uppercase tracking-wider font-bold border border-[#141414] shadow-[3px_3px_0px_#141414] transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1.5"
                                   id="commit-push-btn"
                                 >
@@ -3578,7 +3488,7 @@ Statistics:
                             </div>
                           </form>
 
-                          {status.files.filter(f => f.status.startsWith('staged_')).length === 0 && (
+                          {(!status || !status.files || status.files.filter(f => f.status.startsWith('staged_')).length === 0) && (
                             <div className="p-3 bg-amber-50 border border-[#141414] text-[11px] text-[#141414] leading-relaxed font-mono">
                               💡 Staging index is empty. Click <span className="underline font-semibold cursor-pointer" onClick={() => handleTrackFile()}>Stage All</span> above to stage changed on-disk files before committing.
                             </div>
@@ -3919,7 +3829,7 @@ Statistics:
                         <h3 className="text-[11px] font-serif italic uppercase text-[#141414] tracking-widest opacity-80 mb-3">Branch Reference Registry</h3>
                         <div className="space-y-2">
                           {branches.map(b => {
-                            const isCurrent = status?.currentBranch === b.name && !status.isDetached;
+                            const isCurrent = status?.currentBranch === b.name && !status?.isDetached;
                             return (
                               <div
                                 key={b.name}
@@ -4049,7 +3959,7 @@ Statistics:
                         ) : (
                           <div className="space-y-2">
                             {tags.map(t => {
-                              const isCheckedOut = status?.currentCommitId === t.commitId && status.isDetached;
+                              const isCheckedOut = status?.currentCommitId === t.commitId && status?.isDetached;
                               return (
                                 <div
                                   key={t.name}

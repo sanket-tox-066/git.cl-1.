@@ -194,7 +194,7 @@ export function MascotCompanion({
     }
 
     // 3. Proactive Merge Conflict Reassurance
-    const currentConflicts = status?.files.filter(f => f.status === 'conflict').length || 0;
+    const currentConflicts = status?.files?.filter(f => f.status === 'conflict').length || 0;
     if (currentConflicts > 0 && prevConflictsCountRef.current === 0) {
       speakText("Oh whiskers! We've run into a merge conflict! Don't worry, look at the files with red labels, resolve the code between markers, stage, and commit!");
     }
@@ -537,12 +537,12 @@ export function MascotCompanion({
     setPose('thinking'); // Tilt head curiously to acknowledge immediately
 
     // Compile active context for Gemini
-    const stagedCount = status?.files.filter(f => 
+    const stagedCount = status?.files?.filter(f => 
       f.status === 'staged_new' || f.status === 'modified_staged' || f.status === 'staged_deleted'
     ).length || 0;
 
-    const modifiedCount = status?.files.filter(f => f.status === 'modified_unstaged').length || 0;
-    const conflictCount = status?.files.filter(f => f.status === 'conflict').length || 0;
+    const modifiedCount = status?.files?.filter(f => f.status === 'modified_unstaged').length || 0;
+    const conflictCount = status?.files?.filter(f => f.status === 'conflict').length || 0;
 
     const activeLesson = LEARN_LESSONS.find(l => l.id === currentLessonId);
 
@@ -585,6 +585,10 @@ export function MascotCompanion({
       if (token) {
         headers['Authorization'] = `Bearer ${token}`;
         headers['x-session-token'] = token;
+        const sessionUser = localStorage.getItem('gc_session_user');
+        if (sessionUser) {
+          headers['x-session-user'] = sessionUser;
+        }
       }
       
       const isPlaygroundActive = (window as any).isPlaygroundModeActive;
@@ -684,19 +688,19 @@ export function MascotCompanion({
       return "Whiskers! Our VCS tracker isn't initialized yet. Initialize the clean sandbox or launch the academy path to begin tracking revisions!";
     }
 
-    const conflictFiles = status.files.filter(f => f.status === 'conflict');
+    const conflictFiles = status.files?.filter(f => f.status === 'conflict') || [];
     if (conflictFiles.length > 0) {
       return `Oh boy! We have ${conflictFiles.length} merge conflicts! Look for conflict markers (<<<<<<< HEAD) in your files, choose which lines to keep, save, and hit 'Commit' to resolve!`;
     }
 
-    const modifiedFiles = status.files.filter(f => f.status === 'modified_unstaged');
+    const modifiedFiles = status.files?.filter(f => f.status === 'modified_unstaged') || [];
     if (modifiedFiles.length > 0) {
       return `Foxy-fine! You have ${modifiedFiles.length} file(s) with unstaged edits. Stage them with the "Stage Changes" button to queue them up for a commit snapshot!`;
     }
 
-    const stagedFiles = status.files.filter(f => 
+    const stagedFiles = status.files?.filter(f => 
       f.status === 'staged_new' || f.status === 'modified_staged' || f.status === 'staged_deleted'
-    );
+    ) || [];
     if (stagedFiles.length > 0) {
       return `Excellent work! You have ${stagedFiles.length} changes staged and ready to commit. Type a description in the Commit Box on the dashboard to save your snapshot forever!`;
     }
