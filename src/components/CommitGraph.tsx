@@ -79,6 +79,9 @@ export const CommitGraph: React.FC<CommitGraphProps> = ({
       list.splice(mainIdx, 1);
       list.unshift('main');
     }
+    if (list.length === 0) {
+      list.push('main');
+    }
     return list;
   }, [commits, branches]);
 
@@ -93,16 +96,46 @@ export const CommitGraph: React.FC<CommitGraphProps> = ({
 
   // Assign track columns and compute coordinates
   const { nodes, links, trackCount } = useMemo(() => {
+    const commitsWithVirtual = [...sortedCommits];
+
+    // Create virtual pre-commit draft node to showcase how the canvas behaves
     if (sortedCommits.length === 0) {
-      return { nodes: [], links: [], trackCount: 1 };
+      commitsWithVirtual.push({
+        id: 'virtual-pre-commit',
+        parent: null,
+        timestamp: new Date(),
+        message: 'Initialize Repository (Workspace Pre-commit Draft)',
+        author: 'Developer <developer@gitclone.internal>',
+        snapshot: {
+          'README.md': '# Welcome to GitClone\nMake changes and write your first commit to populate this graph!',
+          'index.js': 'console.log("Welcome to GitClone!");'
+        },
+        branch: 'main',
+        isVirtual: true
+      } as any);
+    } else {
+      const headCommit = currentCommitId 
+        ? sortedCommits.find(c => c.id === currentCommitId) 
+        : sortedCommits[sortedCommits.length - 1];
+      
+      commitsWithVirtual.push({
+        id: 'virtual-pre-commit',
+        parent: headCommit ? headCommit.id : null,
+        timestamp: new Date(),
+        message: 'Working Tree / Pre-commit Draft (Uncommitted State)',
+        author: 'Developer <developer@gitclone.internal>',
+        snapshot: headCommit ? headCommit.snapshot : {},
+        branch: headCommit ? headCommit.branch : 'main',
+        isVirtual: true
+      } as any);
     }
 
-    const calculatedNodes: Array<Commit & { x: number; y: number; track: number; color: string }> = [];
+    const calculatedNodes: Array<Commit & { x: number; y: number; track: number; color: string; isVirtual?: boolean }> = [];
     const idToNodeMap = new Map<string, typeof calculatedNodes[0]>();
     const commitTracks: { [commitId: string]: number } = {};
 
     // Determine the track index for each commit
-    sortedCommits.forEach((commit) => {
+    commitsWithVirtual.forEach((commit) => {
       let track = 0;
       if (commit.branch && branchTrackMap[commit.branch] !== undefined) {
         track = branchTrackMap[commit.branch];
@@ -120,14 +153,15 @@ export const CommitGraph: React.FC<CommitGraphProps> = ({
       const rowHeight = 65;
       const x = 50 + track * colWidth;
       const y = 45 + calculatedNodes.length * rowHeight;
-      const color = branchColors[track % branchColors.length];
+      const color = (commit as any).isVirtual ? '#10b981' : branchColors[track % branchColors.length];
 
       const node = {
         ...commit,
         x,
         y,
         track,
-        color
+        color,
+        isVirtual: (commit as any).isVirtual
       };
 
       calculatedNodes.push(node);
@@ -140,6 +174,7 @@ export const CommitGraph: React.FC<CommitGraphProps> = ({
       source: { x: number; y: number };
       target: { x: number; y: number };
       color: string;
+      isVirtual?: boolean;
     }> = [];
 
     calculatedNodes.forEach((node) => {
@@ -150,7 +185,8 @@ export const CommitGraph: React.FC<CommitGraphProps> = ({
             id: `${parentNode.id}-${node.id}`,
             source: { x: parentNode.x, y: parentNode.y },
             target: { x: node.x, y: node.y },
-            color: node.color // line gets color of child's track
+            color: node.isVirtual ? '#10b981' : node.color,
+            isVirtual: node.isVirtual
           });
         }
       }
@@ -161,7 +197,7 @@ export const CommitGraph: React.FC<CommitGraphProps> = ({
             id: `${parent2Node.id}-${node.id}-merge`,
             source: { x: parent2Node.x, y: parent2Node.y },
             target: { x: node.x, y: node.y },
-            color: '#b91c1c' // distinctive red color for merge links
+            color: '#b91c1c'
           });
         }
       }
@@ -172,7 +208,7 @@ export const CommitGraph: React.FC<CommitGraphProps> = ({
       links: calculatedLinks,
       trackCount: Math.max(1, branchList.length)
     };
-  }, [sortedCommits, branchTrackMap, branchColors, branchList.length]);
+  }, [sortedCommits, branchTrackMap, branchColors, branchList, currentCommitId]);
 
   // Zoom Handlers
   const handleWheel = (e: React.WheelEvent) => {
@@ -222,6 +258,16 @@ export const CommitGraph: React.FC<CommitGraphProps> = ({
   useEffect(() => {
     handleReset();
   }, [commits.length]);
+
+  // Auto-select virtual pre-commit draft node if there are no real commits yet
+  useEffect(() => {
+    if (commits.length === 0 && !selectedNode) {
+      const virtualNode = nodes.find(n => n.isVirtual);
+      if (virtualNode) {
+        setSelectedNode(virtualNode);
+      }
+    }
+  }, [commits.length, nodes, selectedNode]);
 
   // Generate cubic bezier curves for lineage connectors
   const getCurvePath = (source: { x: number; y: number }, target: { x: number; y: number }) => {
@@ -306,207 +352,215 @@ export const CommitGraph: React.FC<CommitGraphProps> = ({
           onMouseLeave={handleMouseUpOrLeave}
           className="relative flex-1 min-h-[320px] bg-[#F0EFED] border border-[#141414] overflow-hidden cursor-grab active:cursor-grabbing select-none"
         >
-          {commits.length === 0 ? (
-            <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-8 text-zinc-500 font-serif italic">
-              <GitCommit className="w-10 h-10 mb-2 stroke-[1.5] text-zinc-400" />
-              <p className="text-xs">No commits exist yet. Create a commit to populate the lineage graph.</p>
+          {commits.length === 0 && (
+            <div className="absolute top-3 left-3 bg-emerald-50 text-emerald-800 border border-emerald-500 px-3 py-1.5 font-mono text-[10px] uppercase font-bold z-10 shadow-[2px_2px_0px_#10b981] flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-ping"></span>
+              🌱 Initial Workspace Pre-Commit Showcase
             </div>
-          ) : (
-            <svg
-              width="100%"
-              height="100%"
-              className="absolute inset-0 pointer-events-none"
-            >
-              {/* Main transformed grouping for zoom & pan */}
-              <g transform={`translate(${zoom.x}, ${zoom.y}) scale(${zoom.k})`} className="pointer-events-auto">
-                
-                {/* 1. Track Guidelines */}
-                {branchList.map((branch, idx) => {
-                  const xCoord = 50 + idx * 70;
-                  return (
-                    <motion.g 
-                      key={branch} 
-                      className="opacity-15"
-                      animate={{ x: 0 }}
+          )}
+
+          <svg
+            width="100%"
+            height="100%"
+            className="absolute inset-0 pointer-events-none"
+          >
+            {/* Main transformed grouping for zoom & pan */}
+            <g transform={`translate(${zoom.x}, ${zoom.y}) scale(${zoom.k})`} className="pointer-events-auto">
+              
+              {/* 1. Track Guidelines */}
+              {branchList.map((branch, idx) => {
+                const xCoord = 50 + idx * 70;
+                return (
+                  <motion.g 
+                    key={branch} 
+                    className="opacity-15"
+                    animate={{ x: 0 }}
+                    transition={{ type: 'spring', stiffness: 200, damping: 20 }}
+                  >
+                    <motion.line
+                      animate={{ x1: xCoord, x2: xCoord }}
                       transition={{ type: 'spring', stiffness: 200, damping: 20 }}
+                      y1={0}
+                      y2={svgHeight}
+                      stroke="#141414"
+                      strokeWidth={1.5}
+                      strokeDasharray="4,4"
+                    />
+                    <motion.text
+                      animate={{ x: xCoord }}
+                      transition={{ type: 'spring', stiffness: 200, damping: 20 }}
+                      y={20}
+                      textAnchor="middle"
+                      className="font-mono text-[9px] fill-[#141414] font-bold"
                     >
-                      <motion.line
-                        animate={{ x1: xCoord, x2: xCoord }}
-                        transition={{ type: 'spring', stiffness: 200, damping: 20 }}
-                        y1={0}
-                        y2={svgHeight}
-                        stroke="#141414"
-                        strokeWidth={1.5}
-                        strokeDasharray="4,4"
+                      T-{idx}
+                    </motion.text>
+                  </motion.g>
+                );
+              })}
+
+              {/* 2. Lineage Connector Lines */}
+              <AnimatePresence>
+                {links.map((link) => (
+                  <motion.path
+                    key={link.id}
+                    initial={{ pathLength: 0, opacity: 0 }}
+                    animate={{ 
+                      pathLength: 1, 
+                      opacity: 0.75,
+                      d: getCurvePath(link.source, link.target)
+                    }}
+                    exit={{ opacity: 0, pathLength: 0 }}
+                    transition={{ 
+                      d: { type: 'spring', stiffness: 180, damping: 22 },
+                      pathLength: { duration: 0.6, ease: "easeOut" },
+                      opacity: { duration: 0.3 }
+                    }}
+                    fill="none"
+                    stroke={link.color}
+                    strokeWidth={2.5}
+                  />
+                ))}
+              </AnimatePresence>
+
+              {/* 3. Interactive Commit Nodes */}
+              <AnimatePresence>
+                {nodes.map((node) => {
+                  const isCurrent = currentCommitId === node.id;
+                  const isSelected = selectedNode?.id === node.id;
+                  const isHovered = hoveredNode?.id === node.id;
+                  const commitBranches = getBranchesForCommit(node.id);
+                  const commitTags = getTagsForCommit(node.id);
+                  const maxBranchLen = commitBranches.reduce((max, br) => Math.max(max, br.name.length), 0);
+                  const tagsOffset = commitBranches.length > 0 ? 55 + maxBranchLen * 6 + 20 : 55;
+
+                  return (
+                    <motion.g
+                      key={node.id}
+                      initial={{ opacity: 0, scale: 0.5, x: node.x, y: node.y - 20 }}
+                      animate={{ 
+                        opacity: 1, 
+                        scale: 1,
+                        x: node.x,
+                        y: node.y
+                      }}
+                      exit={{ opacity: 0, scale: 0.5, y: node.y + 20 }}
+                      transition={{ type: 'spring', stiffness: 220, damping: 22 }}
+                      className="interactive-node cursor-pointer group"
+                      onClick={() => setSelectedNode(node)}
+                      onMouseEnter={() => setHoveredNode(node)}
+                      onMouseLeave={() => setHoveredNode(null)}
+                    >
+                      {/* Hover / Select Aura */}
+                      <motion.circle
+                        r={isSelected ? 18 : isHovered ? 14 : 0}
+                        animate={{ r: isSelected ? 18 : isHovered ? 14 : 0 }}
+                        transition={{ type: 'spring', stiffness: 300, damping: 20 }}
+                        className="fill-none stroke-[#141414] stroke-2 opacity-50 stroke-dasharray-[2,2]"
                       />
-                      <motion.text
-                        animate={{ x: xCoord }}
-                        transition={{ type: 'spring', stiffness: 200, damping: 20 }}
-                        y={20}
-                        textAnchor="middle"
-                        className="font-mono text-[9px] fill-[#141414] font-bold"
+
+                      {/* Main Node Point */}
+                      <motion.circle
+                        r={node.isVirtual ? 8 : (isCurrent ? 9 : 6)}
+                        animate={{ 
+                          r: node.isVirtual ? 8 : (isCurrent ? 9 : 6),
+                          strokeWidth: node.isVirtual ? 2 : (isCurrent ? 2.5 : 1.5) 
+                        }}
+                        transition={{ type: 'spring', stiffness: 300, damping: 20 }}
+                        fill={node.isVirtual ? '#E4E3E0' : node.color}
+                        stroke={node.isVirtual ? '#10b981' : '#141414'}
+                        strokeDasharray={node.isVirtual ? '3,3' : 'none'}
+                        className={`transition-all duration-150 group-hover:scale-125 ${node.isVirtual ? 'animate-pulse' : ''}`}
+                      />
+
+                      {node.isVirtual && (
+                        <circle
+                          r={3.5}
+                          fill="#10b981"
+                        />
+                      )}
+
+                      {/* Double Ring for current Head state */}
+                      {isCurrent && !node.isVirtual && (
+                        <motion.circle
+                          r={4}
+                          initial={{ scale: 0 }}
+                          animate={{ scale: [1, 1.25, 1] }}
+                          transition={{ repeat: Infinity, duration: 2, ease: "easeInOut" }}
+                          fill="#E4E3E0"
+                          stroke="#141414"
+                          strokeWidth={1}
+                        />
+                      )}
+
+                      {/* Commit ID Label next to Node */}
+                      <text
+                        x={16}
+                        y={4}
+                        className={`font-mono text-[10px] font-bold ${node.isVirtual ? 'fill-emerald-600' : 'fill-[#141414]'} bg-[#F0EFED] select-none`}
                       >
-                        T-{idx}
-                      </motion.text>
+                        {node.isVirtual ? 'DRAFT*' : node.id.substring(0, 7)}
+                      </text>
+
+                      {/* Branch labels pointing directly to node */}
+                      {commitBranches.length > 0 && (
+                        <g transform={`translate(${55}, -2)`}>
+                          {commitBranches.map((br, bIdx) => (
+                            <g key={br.name} transform={`translate(0, ${bIdx * 15})`}>
+                              {/* tag box */}
+                              <rect
+                                x={0}
+                                y={-8}
+                                width={br.name.length * 6 + 12}
+                                height={13}
+                                fill="#141414"
+                                stroke="#141414"
+                                strokeWidth={1}
+                              />
+                              <text
+                                x={6}
+                                y={2}
+                                className="font-mono text-[8px] font-bold fill-[#E4E3E0]"
+                              >
+                                {br.name}
+                              </text>
+                            </g>
+                          ))}
+                        </g>
+                      )}
+
+                      {/* Tag labels pointing directly to node */}
+                      {commitTags.length > 0 && (
+                        <g transform={`translate(${tagsOffset}, -2)`}>
+                          {commitTags.map((tg, tIdx) => (
+                            <g key={tg.name} transform={`translate(0, ${tIdx * 15})`}>
+                              {/* tag box */}
+                              <rect
+                                x={0}
+                                y={-8}
+                                width={tg.name.length * 6 + 18}
+                                height={13}
+                                fill="#D35400"
+                                stroke="#141414"
+                                strokeWidth={1}
+                              />
+                              <text
+                                x={4}
+                                y={2}
+                                className="font-mono text-[8px] font-bold fill-[#E4E3E0]"
+                              >
+                                🏷️ {tg.name}
+                              </text>
+                            </g>
+                          ))}
+                        </g>
+                      )}
                     </motion.g>
                   );
                 })}
-
-                {/* 2. Lineage Connector Lines */}
-                <AnimatePresence>
-                  {links.map((link) => (
-                    <motion.path
-                      key={link.id}
-                      initial={{ pathLength: 0, opacity: 0 }}
-                      animate={{ 
-                        pathLength: 1, 
-                        opacity: 0.75,
-                        d: getCurvePath(link.source, link.target)
-                      }}
-                      exit={{ opacity: 0, pathLength: 0 }}
-                      transition={{ 
-                        d: { type: 'spring', stiffness: 180, damping: 22 },
-                        pathLength: { duration: 0.6, ease: "easeOut" },
-                        opacity: { duration: 0.3 }
-                      }}
-                      fill="none"
-                      stroke={link.color}
-                      strokeWidth={2.5}
-                    />
-                  ))}
-                </AnimatePresence>
-
-                {/* 3. Interactive Commit Nodes */}
-                <AnimatePresence>
-                  {nodes.map((node) => {
-                    const isCurrent = currentCommitId === node.id;
-                    const isSelected = selectedNode?.id === node.id;
-                    const isHovered = hoveredNode?.id === node.id;
-                    const commitBranches = getBranchesForCommit(node.id);
-                    const commitTags = getTagsForCommit(node.id);
-                    const maxBranchLen = commitBranches.reduce((max, br) => Math.max(max, br.name.length), 0);
-                    const tagsOffset = commitBranches.length > 0 ? 55 + maxBranchLen * 6 + 20 : 55;
-
-                    return (
-                      <motion.g
-                        key={node.id}
-                        initial={{ opacity: 0, scale: 0.5, x: node.x, y: node.y - 20 }}
-                        animate={{ 
-                          opacity: 1, 
-                          scale: 1,
-                          x: node.x,
-                          y: node.y
-                        }}
-                        exit={{ opacity: 0, scale: 0.5, y: node.y + 20 }}
-                        transition={{ type: 'spring', stiffness: 220, damping: 22 }}
-                        className="interactive-node cursor-pointer group"
-                        onClick={() => setSelectedNode(node)}
-                        onMouseEnter={() => setHoveredNode(node)}
-                        onMouseLeave={() => setHoveredNode(null)}
-                      >
-                        {/* Hover / Select Aura */}
-                        <motion.circle
-                          r={isSelected ? 18 : isHovered ? 14 : 0}
-                          animate={{ r: isSelected ? 18 : isHovered ? 14 : 0 }}
-                          transition={{ type: 'spring', stiffness: 300, damping: 20 }}
-                          className="fill-none stroke-[#141414] stroke-2 opacity-50 stroke-dasharray-[2,2]"
-                        />
-
-                        {/* Main Node Point */}
-                        <motion.circle
-                          r={isCurrent ? 9 : 6}
-                          animate={{ 
-                            r: isCurrent ? 9 : 6,
-                            strokeWidth: isCurrent ? 2.5 : 1.5 
-                          }}
-                          transition={{ type: 'spring', stiffness: 300, damping: 20 }}
-                          fill={node.color}
-                          stroke="#141414"
-                          className="transition-all duration-150 group-hover:scale-125"
-                        />
-
-                        {/* Double Ring for current Head state */}
-                        {isCurrent && (
-                          <motion.circle
-                            r={4}
-                            initial={{ scale: 0 }}
-                            animate={{ scale: [1, 1.25, 1] }}
-                            transition={{ repeat: Infinity, duration: 2, ease: "easeInOut" }}
-                            fill="#E4E3E0"
-                            stroke="#141414"
-                            strokeWidth={1}
-                          />
-                        )}
-
-                        {/* Commit ID Label next to Node */}
-                        <text
-                          x={16}
-                          y={4}
-                          className="font-mono text-[10px] font-bold fill-[#141414] bg-[#F0EFED] select-none"
-                        >
-                          {node.id.substring(0, 7)}
-                        </text>
-
-                        {/* Branch labels pointing directly to node */}
-                        {commitBranches.length > 0 && (
-                          <g transform={`translate(${55}, -2)`}>
-                            {commitBranches.map((br, bIdx) => (
-                              <g key={br.name} transform={`translate(0, ${bIdx * 15})`}>
-                                {/* tag box */}
-                                <rect
-                                  x={0}
-                                  y={-8}
-                                  width={br.name.length * 6 + 12}
-                                  height={13}
-                                  fill="#141414"
-                                  stroke="#141414"
-                                  strokeWidth={1}
-                                />
-                                <text
-                                  x={6}
-                                  y={2}
-                                  className="font-mono text-[8px] font-bold fill-[#E4E3E0]"
-                                >
-                                  {br.name}
-                                </text>
-                              </g>
-                            ))}
-                          </g>
-                        )}
-
-                        {/* Tag labels pointing directly to node */}
-                        {commitTags.length > 0 && (
-                          <g transform={`translate(${tagsOffset}, -2)`}>
-                            {commitTags.map((tg, tIdx) => (
-                              <g key={tg.name} transform={`translate(0, ${tIdx * 15})`}>
-                                {/* tag box */}
-                                <rect
-                                  x={0}
-                                  y={-8}
-                                  width={tg.name.length * 6 + 18}
-                                  height={13}
-                                  fill="#D35400"
-                                  stroke="#141414"
-                                  strokeWidth={1}
-                                />
-                                <text
-                                  x={4}
-                                  y={2}
-                                  className="font-mono text-[8px] font-bold fill-[#E4E3E0]"
-                                >
-                                  🏷️ {tg.name}
-                                </text>
-                              </g>
-                            ))}
-                          </g>
-                        )}
-                      </motion.g>
-                    );
-                  })}
-                </AnimatePresence>
-              </g>
-            </svg>
-          )}
+              </AnimatePresence>
+            </g>
+          </svg>
 
           {/* Quick Hover Tooltip */}
           <AnimatePresence>
@@ -518,13 +572,15 @@ export const CommitGraph: React.FC<CommitGraphProps> = ({
                 className="absolute bottom-3 left-3 right-3 bg-[#141414] text-[#E4E3E0] border border-[#141414] p-3 shadow-[4px_4px_0px_#888888] font-mono text-[10px] uppercase pointer-events-none z-10 space-y-1"
               >
                 <div className="flex items-center justify-between border-b border-[#E4E3E0]/20 pb-1">
-                  <span className="font-bold">commit {hoveredNode.id.substring(0, 7)}</span>
+                  <span className="font-bold">
+                    {hoveredNode.isVirtual ? 'Workspace Copy' : `commit ${hoveredNode.id.substring(0, 7)}`}
+                  </span>
                   <span>{hoveredNode.branch || 'detached HEAD'}</span>
                 </div>
                 <div className="text-[11px] font-bold text-amber-200 line-clamp-1">{hoveredNode.message}</div>
                 <div className="flex justify-between text-[9px] opacity-80 pt-0.5">
                   <span>By: {hoveredNode.author.split(' <')[0]}</span>
-                  <span>{new Date(hoveredNode.timestamp).toLocaleTimeString()}</span>
+                  <span>{hoveredNode.isVirtual ? 'LIVE WORKSPACE' : new Date(hoveredNode.timestamp).toLocaleTimeString()}</span>
                 </div>
               </motion.div>
             )}
@@ -545,7 +601,9 @@ export const CommitGraph: React.FC<CommitGraphProps> = ({
               <div className="space-y-2 bg-[#F0EFED] border border-[#141414] p-3 shadow-[2px_2px_0px_#141414]">
                 <div className="flex items-center justify-between text-[10px] text-zinc-600 font-bold border-b border-[#141414]/10 pb-1 mb-1">
                   <span>SHA-1 HASH</span>
-                  <span className="bg-[#141414] text-[#E4E3E0] px-1 py-0.5 font-bold">{selectedNode.id.substring(0, 10)}...</span>
+                  <span className="bg-[#141414] text-[#E4E3E0] px-1 py-0.5 font-bold">
+                    {selectedNode.isVirtual ? 'UNCOMMITTED_DRAFT' : `${selectedNode.id.substring(0, 10)}...`}
+                  </span>
                 </div>
                 
                 <div className="text-xs font-bold text-[#141414] leading-relaxed break-words">
@@ -559,6 +617,18 @@ export const CommitGraph: React.FC<CommitGraphProps> = ({
                   </div>
                 )}
               </div>
+
+              {selectedNode.isVirtual && (
+                <div className="bg-emerald-50 border border-emerald-500 p-2.5 space-y-1">
+                  <div className="text-[10px] font-bold text-emerald-800 uppercase flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-ping"></span>
+                    Interactive Showcase Copy
+                  </div>
+                  <p className="text-[10px] text-emerald-900 leading-normal font-sans">
+                    This represents your current uncommitted changes. Stage files and run "Commit Snapshot" to freeze this state permanently into the lineage tree.
+                  </p>
+                </div>
+              )}
 
               {/* Attributes block */}
               <div className="space-y-2 text-[10px] text-zinc-800">
@@ -609,11 +679,12 @@ export const CommitGraph: React.FC<CommitGraphProps> = ({
           <div className="pt-4 border-t border-[#141414]">
             <button
               onClick={() => {
+                if (selectedNode.isVirtual) return;
                 if (confirm(`Do you want to checkout and check out commit ${selectedNode.id.substring(0, 7)}? This will override unstaged changes if Force Checkout is toggled.`)) {
                   onCheckout(selectedNode.id);
                 }
               }}
-              disabled={isLoading}
+              disabled={isLoading || selectedNode.isVirtual}
               className="w-full py-2.5 bg-[#141414] hover:bg-zinc-800 text-[#E4E3E0] disabled:opacity-50 text-xs font-bold uppercase border border-[#141414] shadow-[4px_4px_0px_#888888] flex items-center justify-center gap-2 transition cursor-pointer"
             >
               {isLoading ? (
@@ -621,10 +692,12 @@ export const CommitGraph: React.FC<CommitGraphProps> = ({
               ) : (
                 <RotateCcw className="w-3.5 h-3.5" />
               )}
-              Time Travel to Commit
+              {selectedNode.isVirtual ? 'Workspace Copy Active' : 'Time Travel to Commit'}
             </button>
             <div className="mt-2 text-[9px] text-zinc-500 text-center leading-normal">
-              Warning: Checking out a specific commit puts you in a "Detached HEAD" state.
+              {selectedNode.isVirtual 
+                ? 'This represents your live working directory draft. Changes can be modified in the staging area.'
+                : 'Warning: Checking out a specific commit puts you in a "Detached HEAD" state.'}
             </div>
           </div>
         )}

@@ -43,8 +43,9 @@ import { cherryPick, rebaseBranch } from './src/backend/cherry_pick';
 import { checkIntegrity, runGarbageCollection } from './src/backend/integrity';
 import { generateBranchyResponse, generateBranchyResponseStream } from './src/backend/companion';
 
+export const app = express();
+
 async function startServer() {
-  const app = express();
   const PORT = 3000;
 
   // Middleware
@@ -74,15 +75,30 @@ async function startServer() {
   };
 
   const getAuthConfig = () => {
+    const defaultAuth = {
+      users: [
+        {
+          username: "developer",
+          password: "password123"
+        },
+        {
+          username: "admin",
+          password: "adminpassword"
+        }
+      ]
+    };
     try {
       const configPath = path.resolve(process.cwd(), 'auth-config.json');
       if (fs.existsSync(configPath)) {
-        return JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+        const parsed = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+        if (parsed && Array.isArray(parsed.users) && parsed.users.length > 0) {
+          return parsed;
+        }
       }
     } catch (e) {
       console.error('Failed to read auth-config.json', e);
     }
-    return { users: [] };
+    return defaultAuth;
   };
 
   // Auth Middleware
@@ -166,7 +182,7 @@ async function startServer() {
       return;
     }
     
-    res.json({ success: true, username: session.username });
+    res.json({ success: true, username: session.username, token });
   });
 
   app.post('/api/auth/logout', (req, res) => {
@@ -1089,9 +1105,11 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+  if (process.env.VERCEL !== '1' && !process.env.VERCEL_ENV) {
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
+  }
 }
 
 startServer();

@@ -15,7 +15,8 @@ import {
   CornerDownLeft,
   Info
 } from 'lucide-react';
-import { SandboxFile, FileStatus, RepoStatusResult } from '../types';
+import { SandboxFile, FileStatus, RepoStatusResult, Commit, BranchInfo, TagInfo } from '../types';
+import { LEARN_LESSONS } from '../data/lessons';
 
 interface MascotCompanionProps {
   status: RepoStatusResult | null;
@@ -23,6 +24,9 @@ interface MascotCompanionProps {
   activeTab: string;
   currentLessonId?: string;
   currentLessonTitle?: string;
+  branches: BranchInfo[];
+  history: Commit[];
+  tags: TagInfo[];
 }
 
 interface ChatHistoryMessage {
@@ -36,7 +40,10 @@ export function MascotCompanion({
   files,
   activeTab,
   currentLessonId,
-  currentLessonTitle
+  currentLessonTitle,
+  branches,
+  history,
+  tags
 }: MascotCompanionProps) {
   // UI and Chat states
   const [isOpen, setIsOpen] = useState(false);
@@ -537,15 +544,31 @@ export function MascotCompanion({
     const modifiedCount = status?.files.filter(f => f.status === 'modified_unstaged').length || 0;
     const conflictCount = status?.files.filter(f => f.status === 'conflict').length || 0;
 
+    const activeLesson = LEARN_LESSONS.find(l => l.id === currentLessonId);
+
     const contextPayload = {
       activeTab,
       repoInitialized: status?.isInitialized || false,
       currentBranch: status?.currentBranch || null,
+      currentCommitId: status?.currentCommitId || null,
+      isDetached: status?.isDetached || false,
       stagedCount,
       modifiedCount,
       conflictCount,
       currentLessonId,
-      currentLessonTitle
+      currentLessonTitle,
+      currentLessonInstructions: activeLesson?.instructions,
+      currentLessonConceptText: activeLesson?.conceptText,
+      currentLessonDescription: activeLesson?.description,
+      filesList: status?.files?.map(f => ({ path: f.path, status: f.status })) || [],
+      branchesList: (branches || []).map(b => b.name),
+      tagsList: (tags || []).map(t => `${t.name} (pointing to ${t.commitId})`),
+      recentCommits: (history || []).slice(0, 10).map(c => ({
+        id: c.id,
+        message: c.message,
+        author: c.author,
+        timestamp: c.timestamp
+      }))
     };
 
     // 30-second connection failure safety timeout to survive cold starts or network lag

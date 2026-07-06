@@ -3,15 +3,19 @@ import path from 'path';
 import zlib from 'zlib';
 import crypto from 'crypto';
 
-export let SANDBOX_DIR = path.resolve(process.cwd(), 'sandbox');
+const isVercel = process.env.VERCEL === '1' || !!process.env.VERCEL || process.env.NOW_BUILDER === '1';
+const baseDir = isVercel ? '/tmp' : process.cwd();
+
+export let SANDBOX_DIR = path.resolve(baseDir, 'sandbox');
 export let VCS_DIR = path.resolve(SANDBOX_DIR, '.gitclone');
 
 export function setPlaygroundMode(enabled: boolean): void {
+  const currentBaseDir = isVercel ? '/tmp' : process.cwd();
   if (enabled) {
-    SANDBOX_DIR = path.resolve(process.cwd(), 'sandbox_playground');
+    SANDBOX_DIR = path.resolve(currentBaseDir, 'sandbox_playground');
     VCS_DIR = path.resolve(SANDBOX_DIR, '.gitclone');
   } else {
-    SANDBOX_DIR = path.resolve(process.cwd(), 'sandbox');
+    SANDBOX_DIR = path.resolve(currentBaseDir, 'sandbox');
     VCS_DIR = path.resolve(SANDBOX_DIR, '.gitclone');
   }
 }

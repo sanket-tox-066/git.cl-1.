@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   GitBranch,
   GitCommit,
@@ -45,8 +45,11 @@ import {
 } from './types';
 import { CommitGraph } from './components/CommitGraph';
 import { VCSBackdrop } from './components/VCSBackdrop';
+import { GitChineseBackdrop } from './components/GitChineseBackdrop';
 import { FileTree } from './components/FileTree';
 import { MascotCompanion } from './components/MascotCompanion';
+import { TypingTerminalLine } from './components/TypingTerminalLine';
+import { RepositoryAnalytics } from './components/RepositoryAnalytics';
 import { exportRepoToPDF } from './utils/pdfExport';
 import { LEARN_LESSONS, LearnLesson } from './data/lessons';
 
@@ -91,6 +94,7 @@ export const PLAYGROUND_CHALLENGES: Challenge[] = [
 ];
 
 // Define custom stable fetch wrapper to support iframe authentication without cookie issues
+const originalFetch = window.fetch;
 const customFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const token = localStorage.getItem('gc_session_token');
   init = init || {};
@@ -110,7 +114,7 @@ const customFetch = async (input: RequestInfo | URL, init?: RequestInit): Promis
       input.searchParams.set('playground', 'true');
     }
   }
-  return window.fetch(input, init);
+  return originalFetch.call(window, input, init);
 };
 
 const fetch = customFetch;
@@ -118,6 +122,43 @@ const fetch = customFetch;
 export default function App() {
   // Navigation & Active Tab
   const [activeTab, setActiveTab] = useState<string>('landing');
+
+  // Terminal Panel & Interactive Shell States
+  interface TerminalEntry {
+    id: string;
+    timestamp: Date;
+    type: 'cmd' | 'out' | 'err';
+    text: string;
+  }
+  const [terminalEntries, setTerminalEntries] = useState<TerminalEntry[]>([
+    { id: 'welcome', timestamp: new Date(), type: 'out', text: 'Welcome to gitcl.core Interactive Shell v1.0.0\nType "help" to see available commands.' }
+  ]);
+  const [isTerminalOpen, setIsTerminalOpen] = useState<boolean>(false);
+  const [terminalTheme, setTerminalTheme] = useState<'retro-CRT' | 'modern-monokai'>(() => {
+    const saved = localStorage.getItem('gitcl_terminal_theme');
+    return (saved === 'retro-CRT' || saved === 'modern-monokai') ? saved : 'retro-CRT';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('gitcl_terminal_theme', terminalTheme);
+  }, [terminalTheme]);
+
+  const [terminalInput, setTerminalInput] = useState<string>('');
+  const [terminalHistory, setTerminalHistory] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState<number>(-1);
+  
+  const terminalScrollRef = useRef<HTMLDivElement>(null);
+  const terminalInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (isTerminalOpen && terminalScrollRef.current) {
+      setTimeout(() => {
+        if (terminalScrollRef.current) {
+          terminalScrollRef.current.scrollTop = terminalScrollRef.current.scrollHeight;
+        }
+      }, 50);
+    }
+  }, [terminalEntries, isTerminalOpen]);
 
   // --- ADDITIONAL CORE STATES FOR GOD-TIER VCS FUNCTIONALITY ---
   const [isPlaygroundActive, setIsPlaygroundActive] = useState<boolean>(false);
@@ -392,6 +433,860 @@ export default function App() {
     });
   }, [fetchStatus, fetchFiles, fetchBranches, fetchHistory, fetchTags, fetchSearchResults]);
 
+  // Intercept and log state mutations to the terminal automatically
+  const loggedFetch = useCallback(async (url: string, init?: RequestInit) => {
+    const res = await fetch(url, init);
+    try {
+      const cloned = res.clone();
+      const data = await cloned.json();
+      
+      const method = init?.method?.toUpperCase() || 'GET';
+      const body = init?.body ? JSON.parse(init.body as string) : {};
+      
+      let command = '';
+      let output = '';
+      let isError = !data.success;
+      
+      const authUserString = currentUser ? `${currentUser} <${currentUser}@gitclone.internal>` : 'Guest <guest@gitclone.internal>';
+      const authHeader = `[VCS Auth: Verified session for ${authUserString}]\n`;
+
+      if (url.includes('/api/init') && method === 'POST') {
+        command = 'git init';
+        output = data.message || 'Initialized empty GitClone repository.';
+      } else if (url.includes('/api/track') && method === 'POST') {
+        command = `git add ${body.path || '.'}`;
+        output = data.message || 'Staged files for commit.';
+        if (data.tracked && data.tracked.length > 0) {
+          data.tracked.forEach((t: any) => {
+            output += `\n  Staged: ${t.path} -> ${t.hash.substring(0, 10)}...`;
+          });
+        }
+      } else if (url.includes('/api/commit') && method === 'POST') {
+        command = `git commit -m "${body.message}"`;
+        output = authHeader + (data.message || 'Committed staged snapshots.');
+        if (data.commit) {
+          output += `\n[${data.commit.id.substring(0, 7)}] ${data.commit.message}\nAuthor: ${data.commit.author}`;
+        }
+      } else if (url.includes('/api/branch')) {
+        if (method === 'POST') {
+          command = `git branch ${body.name}`;
+          output = authHeader + (data.message || `Created branch "${body.name}".`);
+        } else if (method === 'DELETE') {
+          const urlObj = new URL(url, window.location.href);
+          const name = urlObj.searchParams.get('name') || '';
+          command = `git branch -d ${name}`;
+          output = authHeader + (data.message || `Deleted branch "${name}".`);
+        }
+      } else if (url.includes('/api/checkout') && method === 'POST') {
+        command = `git checkout ${body.target}${body.force ? ' -f' : ''}`;
+        output = authHeader + (data.message || `Switched to "${body.target}".`);
+      } else if (url.includes('/api/merge') && method === 'POST') {
+        command = `git merge ${body.targetBranch}`;
+        if (data.conflict) {
+          output = `Merge conflict detected in ${data.conflicts?.length || 0} file(s)!\nResolve conflicts under the Conflicts tab.`;
+          isError = true;
+        } else {
+          output = data.message || `Merged "${body.targetBranch}".`;
+        }
+      } else if (url.includes('/api/tags/create') && method === 'POST') {
+        command = `git tag ${body.name} ${body.commitId.substring(0, 7)}`;
+        output = data.message || `Created tag "${body.name}".`;
+      } else if (url.includes('/api/tags/delete') && method === 'DELETE') {
+        const urlObj = new URL(url, window.location.href);
+        const name = urlObj.searchParams.get('name') || '';
+        command = `git tag -d ${name}`;
+        output = data.message || `Deleted tag "${name}".`;
+      } else if (url.includes('/api/stash/save') && method === 'POST') {
+        command = `git stash save "${body.message || ''}"`;
+        output = data.message || 'Saved workspace changes to stashing index.';
+      } else if (url.includes('/api/stash/apply') && method === 'POST') {
+        command = `git stash apply ${body.id}`;
+        output = data.message || 'Applied stash.';
+      } else if (url.includes('/api/stash/drop') && method === 'DELETE') {
+        const urlObj = new URL(url, window.location.href);
+        const id = urlObj.searchParams.get('id') || '';
+        command = `git stash drop ${id}`;
+        output = data.message || 'Dropped stash.';
+      } else if (url.includes('/api/reflog/reset') && method === 'POST') {
+        command = `git reset ${body.commitId}`;
+        output = data.message || 'HEAD pointer reset.';
+      } else if (url.includes('/api/gc') && method === 'POST') {
+        command = 'git gc';
+        output = data.message || 'Garbage collection completed.';
+      }
+      
+      if (command) {
+        setTerminalEntries(prev => [
+          ...prev,
+          { id: Math.random().toString(), timestamp: new Date(), type: 'cmd', text: command },
+          { id: Math.random().toString(), timestamp: new Date(), type: isError ? 'err' : 'out', text: output }
+        ]);
+        setIsTerminalOpen(true);
+      }
+    } catch (e) {
+      // ignore
+    }
+    return res;
+  }, [currentUser]);
+
+  const handleExecuteTerminalCommand = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const input = terminalInput.trim();
+    if (!input) return;
+
+    setTerminalInput('');
+    setHistoryIndex(-1);
+    setTerminalHistory(prev => {
+      const filtered = prev.filter(x => x !== input);
+      return [...filtered, input];
+    });
+
+    setTerminalEntries(prev => [
+      ...prev,
+      { id: Math.random().toString(), timestamp: new Date(), type: 'cmd', text: input }
+    ]);
+
+    // Support file redirectors: command > file, command >> file
+    let redirectionType: '>' | '>>' | null = null;
+    let redirectionFile: string | null = null;
+    let parsedInput = input;
+
+    if (input.includes('>>')) {
+      const parts = input.split('>>');
+      parsedInput = parts[0].trim();
+      redirectionType = '>>';
+      redirectionFile = parts[1].trim();
+    } else if (input.includes('>')) {
+      const parts = input.split('>');
+      parsedInput = parts[0].trim();
+      redirectionType = '>';
+      redirectionFile = parts[1].trim();
+    }
+
+    let cleanCmd = parsedInput;
+    if (cleanCmd.startsWith('git ')) {
+      cleanCmd = cleanCmd.slice(4).trim();
+    }
+
+    const parseArgs = (line: string): string[] => {
+      const args: string[] = [];
+      const regex = /[^\s"']+|"([^"]*)"|'([^']*)'/g;
+      let match;
+      while ((match = regex.exec(line)) !== null) {
+        args.push(match[1] || match[2] || match[0]);
+      }
+      return args;
+    };
+
+    const args = parseArgs(cleanCmd);
+    const command = args[0];
+
+    const writeOutput = async (text: string, type: 'out' | 'err') => {
+      if (redirectionFile && type === 'out') {
+        try {
+          let finalContent = text;
+          if (redirectionType === '>>') {
+            const existingFile = files.find(f => f.path === redirectionFile);
+            const currentContent = existingFile ? existingFile.content || '' : '';
+            finalContent = currentContent + (currentContent && !currentContent.endsWith('\n') ? '\n' : '') + text;
+          }
+          const res = await fetch('/api/sandbox/file', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: redirectionFile, content: finalContent })
+          });
+          const data = await res.json();
+          if (data.success) {
+            setTerminalEntries(prev => [
+              ...prev,
+              { id: Math.random().toString(), timestamp: new Date(), type: 'out', text: `Redirected output to "${redirectionFile}".` }
+            ]);
+            refreshAll();
+          } else {
+            setTerminalEntries(prev => [
+              ...prev,
+              { id: Math.random().toString(), timestamp: new Date(), type: 'err', text: `Redirect failed: ${data.message}` }
+            ]);
+          }
+        } catch (e: any) {
+          setTerminalEntries(prev => [
+            ...prev,
+            { id: Math.random().toString(), timestamp: new Date(), type: 'err', text: `Redirect failed: ${e.message}` }
+          ]);
+        }
+      } else {
+        setTerminalEntries(prev => [
+          ...prev,
+          { id: Math.random().toString(), timestamp: new Date(), type, text }
+        ]);
+      }
+    };
+
+    try {
+      switch (command) {
+        case 'clear':
+        case 'cls':
+          setTerminalEntries([]);
+          break;
+
+        case 'help':
+          await writeOutput(`Available VCS & Shell commands:
+  git status                  - Show working tree status
+  git add <file>              - Stage a file (use "." or leave empty for all)
+  git commit -m "<message>"   - Record snapshot
+  git branch                  - List, create, or delete branches
+  git checkout <target>       - Switch branch or checkout commit/tag (use "-f" to force)
+  git merge <branch>          - Merge another branch into current
+  git history / git log       - Show commit lineage logs
+  git tag                     - Create, list, or delete tags
+  git stash [save/list/apply] - Work with the stash
+  git fsck                    - Run SHA-1 integrity checks
+  git gc                      - Reclaim storage space
+  git config                  - Display/configure author details
+  git diff [file]             - Show changes between commits, index, or working tree
+  ls [-l] [-a]                - List sandbox directory contents
+  cat <file>                  - Print content of a sandbox file
+  touch <file>                - Create an empty file or update timestamp
+  rm <file>                   - Delete a file from the sandbox
+  pwd                         - Print current working directory
+  whoami                      - Print current user
+  date                        - Print system date and time
+  uname [-a]                  - Print operating system details
+  neofetch                    - Print aesthetic system and repository specs
+  echo <text> [> or >> file]  - Print text or redirect output to a file
+  clear                       - Clear terminal screen`, 'out');
+          break;
+
+        case 'whoami':
+          await writeOutput(currentUser || 'developer', 'out');
+          break;
+
+        case 'date':
+          await writeOutput(new Date().toString(), 'out');
+          break;
+
+        case 'uname': {
+          const flag = args[1];
+          const info = flag === '-a' 
+            ? 'Linux gitclone-container 5.15.0-x86_64 #1 SMP Mon Jan 1 00:00:00 UTC 2026 x86_64 GNU/Linux' 
+            : 'Linux';
+          await writeOutput(info, 'out');
+          break;
+        }
+
+        case 'pwd':
+          await writeOutput('/home/developer/sandbox', 'out');
+          break;
+
+        case 'echo': {
+          const textToEcho = args.slice(1).join(' ');
+          await writeOutput(textToEcho, 'out');
+          break;
+        }
+
+        case 'neofetch': {
+          const currentBranch = status?.currentBranch || 'main';
+          const fileCount = files.length;
+          const branchCount = branches.length;
+          const commitCount = history.length;
+          const sysText = `
+ ██████╗ ██╗████████╗ ██████╗██╗      ██████╗ ███╗   ██╗███████╗
+██╔════╝ ██║╚══██╔══╝██╔════╝██║     ██╔═══██╗████╗  ██║██╔════╝
+██║  ███╗██║   ██║   ██║     ██║     ██║   ██║██╔██╗ ██║█████╗  
+██║   ██║██║   ██║   ██║     ██║     ██║   ██║██║╚██╗██║██╔══╝  
+╚██████╔╝██║   ██║   ╚██████╗███████╗╚██████╔╝██║ ╚████║███████╗
+ ╚══════╝ ╚═╝   ╚═╝    ╚══════╝╚══════╝ ╚═════╝ ╚═╝  ╚═══╝╚══════╝
+
+OS: Linux / GitClone Engine Container
+Host: Cloud Run Sandbox Server
+Kernel: gitcl.core VCS v1.0.0
+Uptime: 100% Interactive
+Shell: bash / interactive-VCS-shell 1.0.0
+Theme: Classic Slate / Retro terminal
+VCS Branch: ${currentBranch}
+VCS Repositories: 1 sandbox repo (.gitclone initialized)
+Working Directory: /home/developer/sandbox
+Statistics:
+  • Tracked Files: ${fileCount} files
+  • Active Branches: ${branchCount} branches
+  • Commit History: ${commitCount} snapshots
+  • Active Companion: Branchy the Fox (AI Companion Online)
+`;
+          await writeOutput(sysText, 'out');
+          break;
+        }
+
+        case 'ls': {
+          const isLong = args.includes('-l') || args.includes('-la') || args.includes('-al');
+          const showAll = args.includes('-a') || args.includes('-la') || args.includes('-al');
+          
+          let text = '';
+          if (isLong) {
+            if (showAll) {
+              text += 'drwxr-xr-x  2 developer  staff    4096 Jul  6 13:17 .gitclone/\n';
+            }
+            if (files.length === 0) {
+              text += 'Total 0 files';
+            } else {
+              files.forEach(f => {
+                const dateStr = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+                let colorIndicator = '';
+                if (f.status.startsWith('staged') || f.status === 'modified_staged') {
+                  colorIndicator = '[STAGED]';
+                } else if (f.status.includes('unstaged') || f.status === 'untracked') {
+                  colorIndicator = '[UNSTAGED]';
+                }
+                text += `-rw-r--r--  1 developer  staff   ${String(f.content?.length || 0).padStart(5)} ${dateStr} ${timeStr}  ${f.path}  ${colorIndicator}\n`;
+              });
+            }
+          } else {
+            let listNames = files.map(f => f.path);
+            if (showAll) {
+              listNames = ['.gitclone/', ...listNames];
+            }
+            if (listNames.length === 0) {
+              text = '(empty sandbox directory)';
+            } else {
+              text = listNames.join('    ');
+            }
+          }
+          await writeOutput(text, 'out');
+          break;
+        }
+
+        case 'cat': {
+          const filePath = args[1];
+          if (!filePath) {
+            await writeOutput('Error: Specify file path. Usage: cat <filename>', 'err');
+            break;
+          }
+          
+          const found = files.find(f => f.path === filePath);
+          if (found) {
+            await writeOutput(found.content || '(empty file)', 'out');
+          } else {
+            try {
+              const res = await fetch(`/api/sandbox/file?path=${encodeURIComponent(filePath)}`);
+              const data = await res.json();
+              if (data.success) {
+                await writeOutput(data.content || '(empty file)', 'out');
+              } else {
+                await writeOutput(`cat: ${filePath}: No such file or directory`, 'err');
+              }
+            } catch {
+              await writeOutput(`cat: ${filePath}: No such file or directory`, 'err');
+            }
+          }
+          break;
+        }
+
+        case 'touch': {
+          const filePath = args[1];
+          if (!filePath) {
+            await writeOutput('Error: Specify file path. Usage: touch <filename>', 'err');
+            break;
+          }
+          
+          try {
+            const existing = files.find(f => f.path === filePath);
+            const content = existing ? (existing.content || '') : '';
+            const res = await fetch('/api/sandbox/file', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ path: filePath, content })
+            });
+            const data = await res.json();
+            if (data.success) {
+              await writeOutput(`touch: created or updated timestamp of "${filePath}"`, 'out');
+              refreshAll();
+            } else {
+              await writeOutput(data.message || 'touch failed.', 'err');
+            }
+          } catch (error: any) {
+            await writeOutput(`touch error: ${error.message}`, 'err');
+          }
+          break;
+        }
+
+        case 'rm': {
+          const filePath = args[1];
+          if (!filePath) {
+            await writeOutput('Error: Specify file path. Usage: rm <filename>', 'err');
+            break;
+          }
+          
+          try {
+            const res = await fetch(`/api/sandbox/file?path=${encodeURIComponent(filePath)}`, {
+              method: 'DELETE'
+            });
+            const data = await res.json();
+            if (data.success) {
+              await writeOutput(`rm: deleted file "${filePath}"`, 'out');
+              refreshAll();
+            } else {
+              await writeOutput(data.message || 'rm failed.', 'err');
+            }
+          } catch (error: any) {
+            await writeOutput(`rm error: ${error.message}`, 'err');
+          }
+          break;
+        }
+
+        case 'diff': {
+          const targetFile = args[1];
+          if (targetFile) {
+            try {
+              const res = await fetch(`/api/diff?path=${encodeURIComponent(targetFile)}`);
+              const data = await res.json();
+              if (data.success && data.diff) {
+                let out = `diff --git a/${targetFile} b/${targetFile}\n`;
+                out += `--- a/${targetFile}\n+++ b/${targetFile}\n`;
+                data.diff.forEach((dl: any) => {
+                  if (dl.type === 'added') {
+                    out += `+ ${dl.content}\n`;
+                  } else if (dl.type === 'removed') {
+                    out += `- ${dl.content}\n`;
+                  } else {
+                    out += `  ${dl.content}\n`;
+                  }
+                });
+                await writeOutput(out, 'out');
+              } else {
+                await writeOutput(data.message || `No changes found for ${targetFile}`, 'err');
+              }
+            } catch (err: any) {
+              await writeOutput(`Failed to fetch diff: ${err.message}`, 'err');
+            }
+          } else {
+            const resStatus = await fetch('/api/status');
+            const statusData = await resStatus.json();
+            const filesList = statusData.files || [];
+            const modifiedFiles = filesList.filter((f: any) => f.status === 'modified_unstaged' || f.status === 'untracked');
+            
+            if (modifiedFiles.length === 0) {
+              await writeOutput('Working tree clean. No unstaged diffs.', 'out');
+            } else {
+              let combinedDiff = '';
+              for (const f of modifiedFiles) {
+                try {
+                  const res = await fetch(`/api/diff?path=${encodeURIComponent(f.path)}`);
+                  const data = await res.json();
+                  if (data.success && data.diff) {
+                    combinedDiff += `diff --git a/${f.path} b/${f.path}\n`;
+                    combinedDiff += `--- a/${f.path}\n+++ b/${f.path}\n`;
+                    data.diff.forEach((dl: any) => {
+                      if (dl.type === 'added') {
+                        combinedDiff += `+ ${dl.content}\n`;
+                      } else if (dl.type === 'removed') {
+                        combinedDiff += `- ${dl.content}\n`;
+                      } else {
+                        combinedDiff += `  ${dl.content}\n`;
+                      }
+                    });
+                    combinedDiff += '\n';
+                  }
+                } catch {
+                  // ignore
+                }
+              }
+              await writeOutput(combinedDiff || 'No changes to display.', 'out');
+            }
+          }
+          break;
+        }
+
+        case 'status': {
+          const res = await fetch('/api/status');
+          const data = await res.json();
+          if (data.success || data.files) {
+            const filesList = data.files || [];
+            const currentBranch = data.currentBranch || (data.isDetached ? 'Detached HEAD' : 'main');
+            let text = `On branch: ${currentBranch}\n`;
+            if (filesList.length === 0) {
+              text += 'Working directory clean, nothing to commit.';
+            } else {
+              const staged = filesList.filter((f: any) => f.status.startsWith('staged') || f.status === 'modified_staged');
+              const unstaged = filesList.filter((f: any) => f.status === 'modified_unstaged' || f.status === 'deleted_unstaged');
+              const untracked = filesList.filter((f: any) => f.status === 'untracked');
+
+              if (staged.length > 0) {
+                text += '\nStaged files (to be committed):\n';
+                staged.forEach((f: any) => { text += `  staged: ${f.path}\n`; });
+              }
+              if (unstaged.length > 0) {
+                text += '\nUnstaged files (modified but not tracked):\n';
+                unstaged.forEach((f: any) => { text += `  modified: ${f.path}\n`; });
+              }
+              if (untracked.length > 0) {
+                text += '\nUntracked files:\n';
+                untracked.forEach((f: any) => { text += `  untracked: ${f.path}\n`; });
+              }
+            }
+            await writeOutput(text, 'out');
+          } else {
+            await writeOutput('Failed to read status.', 'err');
+          }
+          break;
+        }
+
+        case 'add': {
+          const filePath = args[1] === '.' ? undefined : args[1];
+          const res = await fetch('/api/track', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: filePath })
+          });
+          const data = await res.json();
+          if (data.success) {
+            let out = `Success: ${data.message}\n`;
+            if (data.tracked && data.tracked.length > 0) {
+              data.tracked.forEach((t: any) => {
+                out += `  Added: ${t.path} -> ${t.hash.substring(0, 10)}...\n`;
+              });
+            }
+            await writeOutput(out, 'out');
+            refreshAll();
+          } else {
+            await writeOutput(data.message || 'Staging failed.', 'err');
+          }
+          break;
+        }
+
+        case 'commit': {
+          const mIdx = args.indexOf('-m');
+          let msg = '';
+          if (mIdx !== -1 && args[mIdx + 1]) {
+            msg = args[mIdx + 1];
+          } else {
+            await writeOutput('Error: Commit message required. Use commit -m "<message>"', 'err');
+            break;
+          }
+
+          const res = await fetch('/api/commit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: msg, author: 'Student <student@gitclone.internal>' })
+          });
+          const data = await res.json();
+          if (data.success) {
+            let out = `${data.message || 'Snapshot committed successfully.'}\n`;
+            if (data.commit) {
+              out += `[${data.commit.id.substring(0, 7)}] ${data.commit.message}\nAuthor: ${data.commit.author}`;
+            }
+            await writeOutput(out, 'out');
+            refreshAll();
+          } else {
+            await writeOutput(data.message || 'Commit failed.', 'err');
+          }
+          break;
+        }
+
+        case 'branch': {
+          const sub = args[1];
+          if (!sub) {
+            const res = await fetch('/api/branches');
+            const data = await res.json();
+            const list = data.branches || [];
+            const head = status?.currentBranch;
+            let out = '';
+            list.forEach((b: any) => {
+              const isCurrent = b === head;
+              out += `${isCurrent ? '* ' : '  '}${b}\n`;
+            });
+            await writeOutput(out || 'No branches found.', 'out');
+          } else if (sub === '-d') {
+            const name = args[2];
+            if (!name) {
+              await writeOutput('Error: Specify branch name to delete.', 'err');
+              break;
+            }
+            const res = await fetch(`/api/branch?name=${encodeURIComponent(name)}`, {
+              method: 'DELETE'
+            });
+            const data = await res.json();
+            if (data.success) {
+              await writeOutput(data.message || `Deleted branch ${name}.`, 'out');
+              refreshAll();
+            } else {
+              await writeOutput(data.message || 'Failed to delete branch.', 'err');
+            }
+          } else {
+            const res = await fetch('/api/branch', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: sub })
+            });
+            const data = await res.json();
+            if (data.success) {
+              await writeOutput(data.message || `Created branch ${sub}.`, 'out');
+              refreshAll();
+            } else {
+              await writeOutput(data.message || 'Failed to create branch.', 'err');
+            }
+          }
+          break;
+        }
+
+        case 'checkout': {
+          let tgt = args[1];
+          let force = false;
+          if (tgt === '-f') {
+            force = true;
+            tgt = args[2];
+          }
+          if (!tgt) {
+            await writeOutput('Error: Specify target branch, tag, or commit ID.', 'err');
+            break;
+          }
+          const res = await fetch('/api/checkout', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target: tgt, force })
+          });
+          const data = await res.json();
+          if (data.success) {
+            await writeOutput(data.message || `Checked out ${tgt}.`, 'out');
+            refreshAll();
+          } else {
+            await writeOutput(data.message || 'Checkout failed.', 'err');
+          }
+          break;
+        }
+
+        case 'merge': {
+          const branchNameStr = args[1];
+          if (!branchNameStr) {
+            await writeOutput('Error: Specify branch to merge.', 'err');
+            break;
+          }
+          const res = await fetch('/api/merge', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ targetBranch: branchNameStr })
+          });
+          const data = await res.json();
+          if (data.success) {
+            await writeOutput(data.message || `Merged ${branchNameStr}.`, 'out');
+            refreshAll();
+          } else if (data.conflict) {
+            let text = `Merge conflict detected!\nIn-file conflict markers written. Resolve conflicts under the Conflicts tab.\n`;
+            if (data.conflicts) {
+              data.conflicts.forEach((c: any) => { text += `  - Conflict in: ${c.path}\n`; });
+            }
+            await writeOutput(text, 'err');
+            refreshAll();
+          } else {
+            await writeOutput(data.message || 'Merge failed.', 'err');
+          }
+          break;
+        }
+
+        case 'log':
+        case 'history': {
+          const res = await fetch('/api/history');
+          const data = await res.json();
+          const list = data.history || [];
+          let out = '';
+          list.forEach((c: any) => {
+            out += `commit ${c.id}\n`;
+            if (c.parent2) out += `Merge:  ${c.parent.substring(0, 7)} ${c.parent2.substring(0, 7)}\n`;
+            out += `Author: ${c.author}\n`;
+            out += `Date:   ${new Date(c.timestamp).toLocaleString()}\n\n`;
+            out += `    ${c.message}\n\n`;
+          });
+          await writeOutput(out || 'No commit history yet.', 'out');
+          break;
+        }
+
+        case 'tag': {
+          const name = args[1];
+          if (!name) {
+            const res = await fetch('/api/tags');
+            const data = await res.json();
+            const list = data.tags || [];
+            let out = '';
+            list.forEach((t: any) => { out += `  ${t.name.padEnd(15)} -> ${t.commitId}\n`; });
+            await writeOutput(out || 'No tags found.', 'out');
+          } else if (name === '-d') {
+            const del = args[2];
+            if (!del) {
+              await writeOutput('Error: Specify tag to delete.', 'err');
+              break;
+            }
+            const res = await fetch(`/api/tags/delete?name=${encodeURIComponent(del)}`, { method: 'DELETE' });
+            const data = await res.json();
+            if (data.success) {
+              await writeOutput(data.message || `Deleted tag ${del}.`, 'out');
+              refreshAll();
+            } else {
+              await writeOutput(data.message || 'Failed to delete tag.', 'err');
+            }
+          } else {
+            const commitId = args[2];
+            if (!commitId) {
+              await writeOutput('Error: Specify commit ID. Usage: tag <name> <commit-id>', 'err');
+              break;
+            }
+            const res = await fetch('/api/tags/create', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name, commitId })
+            });
+            const data = await res.json();
+            if (data.success) {
+              await writeOutput(data.message || `Created tag ${name}.`, 'out');
+              refreshAll();
+            } else {
+              await writeOutput(data.message || 'Failed to create tag.', 'err');
+            }
+          }
+          break;
+        }
+
+        case 'stash': {
+          const sub = args[1];
+          if (sub === 'save' || sub === 'push') {
+            const msg = args[2] || '';
+            const res = await fetch('/api/stash/save', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ message: msg })
+            });
+            const data = await res.json();
+            if (data.success) {
+              await writeOutput(data.message || 'Stash saved.', 'out');
+              refreshAll();
+            } else {
+              await writeOutput(data.message || 'Stash save failed.', 'err');
+            }
+          } else if (sub === 'list' || !sub) {
+            const res = await fetch('/api/stash');
+            const data = await res.json();
+            const list = data.stashes || [];
+            let out = '';
+            list.forEach((s: any) => { out += `  stash@{${s.id}}: WIP on ${s.headCommitId.substring(0, 7)}: ${s.message}\n`; });
+            await writeOutput(out || 'No stashes found.', 'out');
+          } else if (sub === 'apply') {
+            const id = args[2];
+            if (!id) {
+              await writeOutput('Error: Specify stash ID to apply.', 'err');
+              break;
+            }
+            const res = await fetch('/api/stash/apply', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ id })
+            });
+            const data = await res.json();
+            if (data.success) {
+              await writeOutput(data.message || 'Stash applied successfully.', 'out');
+              refreshAll();
+            } else {
+              await writeOutput(data.message || 'Stash apply failed.', 'err');
+            }
+          } else if (sub === 'drop') {
+            const id = args[2];
+            if (!id) {
+              await writeOutput('Error: Specify stash ID to drop.', 'err');
+              break;
+            }
+            const res = await fetch(`/api/stash/drop?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+            const data = await res.json();
+            if (data.success) {
+              await writeOutput(data.message || 'Stash dropped successfully.', 'out');
+              refreshAll();
+            } else {
+              await writeOutput(data.message || 'Stash drop failed.', 'err');
+            }
+          } else {
+            await writeOutput('Unknown stash subcommand. Use: save, list, apply, drop', 'err');
+          }
+          break;
+        }
+
+        case 'fsck': {
+          const res = await fetch('/api/integrity-check');
+          const data = await res.json();
+          let out = `Audit completed in ${data.totalObjectsCount || 0} objects.\n\n`;
+          if (data.corruptedObjects && data.corruptedObjects.length > 0) {
+            out += `CRITICAL: Corrupted objects found: ${data.corruptedObjects.length}\n`;
+          } else {
+            out += `✓ All checksums matched.\n`;
+          }
+          if (data.danglingReferences && data.danglingReferences.length > 0) {
+            out += `Dangling references found.\n`;
+          } else {
+            out += `✓ No dangling references.\n`;
+          }
+          await writeOutput(out, 'out');
+          break;
+        }
+
+        case 'gc': {
+          const res = await fetch('/api/gc', { method: 'POST' });
+          const data = await res.json();
+          if (data.success) {
+            await writeOutput(`Garbage Collection successful!\n${data.message}`, 'out');
+            refreshAll();
+          } else {
+            await writeOutput(data.message || 'GC failed.', 'err');
+          }
+          break;
+        }
+
+        case 'config': {
+          const sub = args[1];
+          if (sub === 'set') {
+            const name = args[2];
+            const email = args[3];
+            if (!name || !email) {
+              await writeOutput('Error: Provide name and email. Usage: config set <name> <email>', 'err');
+              break;
+            }
+            const res = await fetch('/api/config', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ authorName: name, authorEmail: email })
+            });
+            const data = await res.json();
+            if (data.success) {
+              await writeOutput(`Successfully configured profile as ${name} <${email}>`, 'out');
+            } else {
+              await writeOutput(data.message || 'Config update failed.', 'err');
+            }
+          } else {
+            const res = await fetch('/api/config');
+            const data = await res.json();
+            await writeOutput(`Commit Author Name:  ${data.authorName}\nCommit Author Email: ${data.authorEmail}`, 'out');
+          }
+          break;
+        }
+
+        case 'init': {
+          const res = await fetch('/api/init', { method: 'POST' });
+          const data = await res.json();
+          if (data.success) {
+            await writeOutput(data.message || 'Repository initialized.', 'out');
+            refreshAll();
+          } else {
+            await writeOutput(data.message || 'Initialization failed.', 'err');
+          }
+          break;
+        }
+
+        default:
+          await writeOutput(`Command not found: "${command}". Type "help" to view options.`, 'err');
+          break;
+      }
+    } catch (error: any) {
+      setTerminalEntries(prev => [
+        ...prev,
+        { id: Math.random().toString(), timestamp: new Date(), type: 'err', text: `System Error: ${error.message}` }
+      ]);
+    }
+  };
+
   const checkAuthSession = useCallback(async () => {
     try {
       const res = await fetch('/api/auth/session');
@@ -399,6 +1294,9 @@ export default function App() {
       if (data.success) {
         setIsAuthenticated(true);
         setCurrentUser(data.username);
+        if (data.token) {
+          localStorage.setItem('gc_session_token', data.token);
+        }
         setActiveTab((prev) => (prev === 'landing' || prev === 'login' ? 'dashboard' : prev));
         return true;
       } else {
@@ -788,7 +1686,7 @@ export default function App() {
     setIsLoading(true);
     incrementPlaygroundSteps();
     try {
-      const res = await fetch('/api/commit', {
+      const res = await loggedFetch('/api/commit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: message.trim(), author: 'Student <student@gitclone.internal>' })
@@ -816,7 +1714,7 @@ export default function App() {
     setIsLoading(true);
     incrementPlaygroundSteps();
     try {
-      const res = await fetch('/api/branch', {
+      const res = await loggedFetch('/api/branch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: branchName.trim() })
@@ -841,7 +1739,7 @@ export default function App() {
     setIsLoading(true);
     incrementPlaygroundSteps();
     try {
-      const res = await fetch('/api/checkout', {
+      const res = await loggedFetch('/api/checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ target, force: true })
@@ -966,7 +1864,7 @@ export default function App() {
     await saveUndoState();
     incrementPlaygroundSteps();
     try {
-      const res = await fetch('/api/track', {
+      const res = await loggedFetch('/api/track', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: filePath })
@@ -1022,7 +1920,7 @@ export default function App() {
     const msgToTag = commitMessage.trim();
     const isPushingFlow = shouldPush && remoteEnabled;
     try {
-      const res = await fetch('/api/commit', {
+      const res = await loggedFetch('/api/commit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: commitMessage, author: authorName })
@@ -1086,7 +1984,7 @@ export default function App() {
     incrementPlaygroundSteps();
     setIsLoading(true);
     try {
-      const res = await fetch('/api/checkout', {
+      const res = await loggedFetch('/api/checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ target, force: isForceCheckout })
@@ -1115,7 +2013,7 @@ export default function App() {
     incrementPlaygroundSteps();
     setIsLoading(true);
     try {
-      const res = await fetch('/api/branch', {
+      const res = await loggedFetch('/api/branch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newBranchName })
@@ -1141,7 +2039,7 @@ export default function App() {
     incrementPlaygroundSteps();
     setIsLoading(true);
     try {
-      const res = await fetch(`/api/branch?name=${encodeURIComponent(name)}`, { method: 'DELETE' });
+      const res = await loggedFetch(`/api/branch?name=${encodeURIComponent(name)}`, { method: 'DELETE' });
       const data = await res.json();
       if (data.success) {
         showAlert(data.message, 'success');
@@ -1170,7 +2068,7 @@ export default function App() {
     incrementPlaygroundSteps();
     setIsLoading(true);
     try {
-      const res = await fetch('/api/tags/create', {
+      const res = await loggedFetch('/api/tags/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newTagName.trim(), commitId: tagCommitId.trim() })
@@ -1197,7 +2095,7 @@ export default function App() {
     incrementPlaygroundSteps();
     setIsLoading(true);
     try {
-      const res = await fetch(`/api/tags/delete?name=${encodeURIComponent(name)}`, { method: 'DELETE' });
+      const res = await loggedFetch(`/api/tags/delete?name=${encodeURIComponent(name)}`, { method: 'DELETE' });
       const data = await res.json();
       if (data.success) {
         showAlert(data.message || `Successfully deleted tag '${name}'`, 'success');
@@ -1217,7 +2115,7 @@ export default function App() {
     incrementPlaygroundSteps();
     setIsLoading(true);
     try {
-      const res = await fetch('/api/tags/checkout', {
+      const res = await loggedFetch('/api/tags/checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name })
@@ -1681,8 +2579,11 @@ export default function App() {
 
   const renderLoginPage = () => {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center p-6 bg-[#E4E3E0]">
-        <div className="w-full max-w-md bg-[#F0EFED] border border-[#141414] p-8 shadow-[6px_6px_0px_#141414] space-y-6">
+      <div className="flex-1 flex flex-col items-center justify-center p-6 bg-[#E4E3E0] relative overflow-hidden">
+        {/* Subtle, beautiful interactive Chinese VCS text stream background */}
+        <GitChineseBackdrop isDarkMode={false} />
+
+        <div className="w-full max-w-md bg-[#F0EFED] border border-[#141414] p-8 shadow-[6px_6px_0px_#141414] space-y-6 relative z-10">
           <div className="text-center space-y-1.5 border-b border-[#141414]/10 pb-4">
             <h2 className="text-xl font-mono font-bold uppercase text-[#141414]">Secure Workspace</h2>
             <p className="text-xs font-serif italic text-zinc-600">Authenticate to enter the version control dashboard.</p>
@@ -1754,6 +2655,9 @@ export default function App() {
       <div className="flex-1 flex flex-col items-center justify-center p-6 bg-[#0E0F11] relative overflow-hidden">
         {/* Abstract Cyber Grid decoration */}
         <div className="absolute inset-0 bg-[linear-gradient(to_right,#1f293710_1px,transparent_1px),linear-gradient(to_bottom,#1f293710_1px,transparent_1px)] bg-[size:24px_24px] pointer-events-none" />
+        
+        {/* Subtle, beautiful interactive Chinese VCS text stream background (Dark mode) */}
+        <GitChineseBackdrop isDarkMode={true} />
         
         {/* Warning caution stripes effect */}
         <div className="absolute top-0 left-0 right-0 h-1 bg-[repeating-linear-gradient(45deg,#d97706,#d97706_10px,#1e293b_10px,#1e293b_20px)] opacity-60" />
@@ -1836,7 +2740,7 @@ export default function App() {
         <header className="h-16 border-b border-[#141414] bg-[#E4E3E0] flex items-center px-6 justify-between sticky top-0 z-30 select-none">
           <div className="flex items-center gap-2.5">
             <GitPullRequest className="w-5 h-5 text-[#141414]" />
-            <h1 className="font-mono font-bold text-xl tracking-tighter uppercase text-[#141414]">GitClone.core</h1>
+            <h1 className="font-mono font-bold text-xl tracking-tighter uppercase text-[#141414]">gitcl.core</h1>
           </div>
           
           <div className="flex items-center gap-2.5 sm:gap-4">
@@ -1917,7 +2821,7 @@ export default function App() {
         <div className="flex items-center gap-6">
           <div className="flex items-center gap-2.5">
             <GitPullRequest className="w-5 h-5 text-[#141414]" />
-            <h1 className="font-mono font-bold text-xl tracking-tighter uppercase text-[#141414]">GitClone.core</h1>
+            <h1 className="font-mono font-bold text-xl tracking-tighter uppercase text-[#141414]">gitcl.core</h1>
           </div>
           {isAuthenticated && status?.isInitialized && (
             <div className="flex items-center gap-2 px-3 py-1 bg-[#141414] text-[#E4E3E0] rounded-sm">
@@ -2004,7 +2908,7 @@ export default function App() {
             </div>
             <h2 className="text-2xl font-mono font-bold uppercase tracking-tight">VCS Dashboard Uninitialized</h2>
             <p className="text-sm font-serif italic text-zinc-700 leading-relaxed">
-              Welcome to <span className="font-semibold text-black">GitClone.core</span>. Select an entry path below to unlock either your custom sandbox working directory or the guided visual learning academy.
+              Welcome to <span className="font-semibold text-black">gitcl.core</span>. Select an entry path below to unlock either your custom sandbox working directory or the guided visual learning academy.
             </p>
           </div>
 
@@ -2151,6 +3055,18 @@ export default function App() {
                   </span>
                   <span className="px-1.5 py-0.2 bg-emerald-600 text-white text-[9px] font-mono font-bold animate-pulse">
                     LIVE
+                  </span>
+                </button>
+                <button
+                  onClick={() => {
+                    setActiveTab('analytics');
+                    refreshAll();
+                  }}
+                  className={`px-3 py-2 text-left transition-all border flex items-center justify-between cursor-pointer ${activeTab === 'analytics' ? 'bg-[#141414] text-[#E4E3E0] border-[#141414] font-bold' : 'text-[#141414] hover:bg-[#D9D8D5] border-transparent'}`}
+                  id="nav-analytics"
+                >
+                  <span className="flex items-center gap-1">
+                    <span className="font-bold">10/</span> Repo Analytics
                   </span>
                 </button>
               </nav>
@@ -3391,6 +4307,16 @@ export default function App() {
                 </div>
               )}
 
+              {/* TAB 6.5: REPOSITORY ANALYTICS */}
+              {activeTab === 'analytics' && (
+                <RepositoryAnalytics
+                  history={history}
+                  branches={branches}
+                  files={files}
+                  internals={internals}
+                />
+              )}
+
               {/* TAB 7: CONFLICT RESOLUTION */}
               {activeTab === 'conflicts' && (
                 <div className="space-y-6">
@@ -4427,6 +5353,119 @@ export default function App() {
         </div>
       )}
 
+      {/* TERMINAL BOTTOM DRAWER */}
+      <div 
+        className={`fixed bottom-0 left-0 right-0 z-40 bg-[#121212] border-t-2 border-[#141414] text-[#E4E3E0] font-mono transition-all duration-300 flex flex-col ${
+          isTerminalOpen ? 'h-80' : 'h-10'
+        }`}
+        style={{ boxShadow: '0 -4px 12px rgba(0,0,0,0.25)' }}
+      >
+        {/* Terminal Header */}
+        <div 
+          className="h-10 bg-[#1e1e1e] border-b border-[#2e2e2e] px-4 flex items-center justify-between cursor-pointer select-none"
+          onClick={() => setIsTerminalOpen(!isTerminalOpen)}
+        >
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 bg-emerald-500 rounded-full animate-ping"></span>
+            <span className="text-xs font-bold tracking-wider uppercase text-zinc-300">gitcl.core ~ interactive shell</span>
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              className="text-[10px] text-zinc-300 hover:text-white px-2 py-0.5 border border-zinc-700 bg-zinc-900/50 hover:bg-zinc-800 transition rounded font-mono font-bold flex items-center gap-1"
+              onClick={(e) => {
+                e.stopPropagation();
+                setTerminalTheme(prev => prev === 'retro-CRT' ? 'modern-monokai' : 'retro-CRT');
+              }}
+              title="Toggle Terminal Theme"
+            >
+              <span className="text-zinc-500 font-normal">THEME:</span>
+              <span className={terminalTheme === 'retro-CRT' ? 'text-emerald-400' : 'text-amber-400'}>
+                {terminalTheme === 'retro-CRT' ? 'CRT' : 'MONOKAI'}
+              </span>
+            </button>
+            <span className="text-[10px] text-zinc-500 font-bold uppercase hidden sm:inline">Type "help" to view commands</span>
+            <button 
+              className="text-xs text-zinc-400 hover:text-white px-2 py-0.5 border border-zinc-700 bg-zinc-800 hover:bg-zinc-700 transition font-bold"
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsTerminalOpen(!isTerminalOpen);
+              }}
+            >
+              {isTerminalOpen ? 'COLLAPSE' : 'EXPAND'}
+            </button>
+          </div>
+        </div>
+
+        {/* Terminal Content Screen */}
+        {isTerminalOpen && (
+          <div 
+            className={`flex-1 p-4 overflow-y-auto flex flex-col space-y-1.5 text-xs select-text scroll-smooth transition-all duration-300 relative ${
+              terminalTheme === 'retro-CRT' 
+                ? 'bg-[#040e04] text-[#4af626] shadow-[inset_0_0_20px_rgba(74,246,38,0.15)] [text-shadow:0_0_2px_rgba(74,246,38,0.8)]' 
+                : 'bg-[#272822] text-[#f8f8f2]'
+            }`}
+            ref={terminalScrollRef}
+            onClick={() => terminalInputRef.current?.focus()}
+          >
+            <div className={`text-[10px] pb-1 border-b mb-1 uppercase font-bold tracking-wider ${
+              terminalTheme === 'retro-CRT' ? 'text-[#4af626]/40 border-[#4af626]/20' : 'text-zinc-500 border-zinc-800/50'
+            }`}>
+              CONNECTED TO SANDBOX REPOSITORY • ENGINE v1.0.0
+            </div>
+
+            {terminalEntries.map((entry) => (
+              <TypingTerminalLine
+                key={entry.id}
+                text={entry.text}
+                type={entry.type}
+                theme={terminalTheme}
+              />
+            ))}
+
+            {/* Prompt input form */}
+            <form onSubmit={handleExecuteTerminalCommand} className="flex items-center gap-2 pt-1">
+              <span className={terminalTheme === 'retro-CRT' ? 'text-[#ffb000] font-bold' : 'text-[#f92672] font-bold'}>$</span>
+              <input
+                ref={terminalInputRef}
+                type="text"
+                value={terminalInput}
+                onChange={(e) => setTerminalInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    if (terminalHistory.length === 0) return;
+                    const nextIndex = historyIndex === -1 ? terminalHistory.length - 1 : Math.max(0, historyIndex - 1);
+                    setHistoryIndex(nextIndex);
+                    setTerminalInput(terminalHistory[nextIndex]);
+                  } else if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    if (terminalHistory.length === 0) return;
+                    const nextIndex = historyIndex === -1 ? -1 : historyIndex + 1;
+                    if (nextIndex >= terminalHistory.length || nextIndex === -1) {
+                      setHistoryIndex(-1);
+                      setTerminalInput('');
+                    } else {
+                      setHistoryIndex(nextIndex);
+                      setTerminalInput(terminalHistory[nextIndex]);
+                    }
+                  }
+                }}
+                className={`flex-1 bg-transparent border-none outline-none focus:ring-0 p-0 text-xs font-mono caret-green-500 ${
+                  terminalTheme === 'retro-CRT' 
+                    ? 'text-[#4af626] placeholder-[#4af626]/20 [text-shadow:0_0_2px_rgba(74,246,38,0.8)]' 
+                    : 'text-[#f8f8f2] placeholder-zinc-700'
+                }`}
+                placeholder='Type a command (e.g. "git status" or "git help")...'
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck="false"
+              />
+            </form>
+          </div>
+        )}
+      </div>
+
       {/* FOOTER */}
       <footer className="mt-auto border-t border-[#141414] bg-[#D9D8D5] py-6 px-8 flex flex-col sm:flex-row items-center justify-between gap-4 text-[11px] text-[#141414] font-mono">
         <div>
@@ -4444,6 +5483,9 @@ export default function App() {
         activeTab={activeTab}
         currentLessonId={activeSubTab === 'lessons' && currentLessonIndex !== -1 ? LEARN_LESSONS[currentLessonIndex]?.id : undefined}
         currentLessonTitle={activeSubTab === 'lessons' && currentLessonIndex !== -1 ? LEARN_LESSONS[currentLessonIndex]?.title : undefined}
+        branches={branches}
+        history={history}
+        tags={tags}
       />
 
     </div>
